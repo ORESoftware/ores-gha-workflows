@@ -1,0 +1,14 @@
+[package]
+org = "ORESoftware"
+name = "ores-gha-workflows"
+version = "0.1.0"
+kind = "library"
+language = "typescript"
+
+[package.repository]
+url = "https://github.com/ORESoftware/ores-gha-workflows"
+
+[dependencies]
+
+[scripts]
+test = "npm test"
