@@ -7,9 +7,12 @@ const reusable = readFileSync(
   'utf8',
 );
 const template = readFileSync(new URL('../templates/images.yml', import.meta.url), 'utf8');
+const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 
 function actionReferences(text) {
-  return [...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gm)].map((match) => match[1]);
+  return [...text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gm)].map(
+    (match) => match[1],
+  );
 }
 
 function runBlocks(text) {
@@ -34,12 +37,20 @@ function runBlocks(text) {
 }
 
 test('every action and reusable workflow reference is immutable', () => {
-  const references = [...actionReferences(reusable), ...actionReferences(template)];
-  assert.ok(references.length >= 10, references);
+  const references = [
+    ...actionReferences(reusable),
+    ...actionReferences(template),
+    ...actionReferences(ci),
+  ];
+  assert.ok(references.length >= 12, references);
   for (const reference of references) {
     const separator = reference.lastIndexOf('@');
     assert.notEqual(separator, -1, reference);
-    assert.match(reference.slice(separator + 1), /^[a-f0-9]{40}$/, reference);
+    assert.match(
+      reference.slice(separator + 1),
+      /^(?:[a-f0-9]{40}|sha256:[a-f0-9]{64})$/,
+      reference,
+    );
   }
 });
 
