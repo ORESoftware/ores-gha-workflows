@@ -1,29 +1,57 @@
 # ores-gha-workflows
 
-Reusable GitHub Actions workflows and the scripts they need, shared by every org.
+Reusable GitHub Actions workflows and deterministic support tools shared by the ORE repository fleet.
 
-## `container-images.yml` (workflow_call)
+## `container-images.yml` (`workflow_call`)
 
-Builds `Dockerfile.arm64.dkf` (linux/arm64, on an arm runner — both k8s clusters are
-aarch64) and `Dockerfile.x86-64.dkf` (linux/amd64, for Cloud Run) — falling back to
-`Dockerfile` — pushes each by digest, then stitches multi-arch `:<branch>` and
-`:sha-<12>` tags on **every** registry:
+The reusable workflow validates `Dockerfile` plus its architecture-derived files, builds enabled architectures independently, transfers immutable digests through Actions artifacts, and optionally publishes a multi-architecture manifest.
 
-| registry | name | when |
+Publication is **off by default**. The caller template has two separate jobs:
+
+- pull requests receive read-only repository permission, no provider credentials, and `push: false`;
+- protected-branch pushes and explicit manual dispatches receive the narrowly required package/OIDC permissions and `push: true`.
+
+Every external Action and reusable-workflow reference is a full immutable commit SHA. Policy tools are downloaded from an exact repository revision and verified by SHA-256 before execution. Workflow-call inputs are passed through environment values rather than interpolated into shell source.
+
+### Registries
+
+| Registry | Name | Activation |
 |---|---|---|
-| `ghcr.io/<org>/<repo>` | existing fleet default | always |
-| `<region>-docker.pkg.dev/<gcp-project>/<org>/<repo>` | GCP Artifact Registry, `gcp-project` = the org's project (1:1) | `gcp-project` set |
-| `docker.io/<namespace>/<org>-<repo>` | private Docker Hub namespace | `dockerhub-namespace` set |
+| `ghcr.io/<org>/<repo>` | fleet default | every authorized publication |
+| `<region>-docker.pkg.dev/<gcp-project>/<org>/<repo>` | GCP Artifact Registry | only when `gcp-project` is explicitly configured |
+| `docker.io/<namespace>/<org>-<repo>` | private Docker Hub namespace | only when `dockerhub-namespace` is explicitly configured |
 
-Auth: GHCR via `GITHUB_TOKEN`; Docker Hub via org secrets `DOCKERHUB_USERNAME` /
-`DOCKERHUB_TOKEN`; GCP via Workload Identity Federation (`GCP_WORKLOAD_IDENTITY_PROVIDER`,
-`GCP_SERVICE_ACCOUNT`) — no JSON keys in GitHub. Copy `templates/images.yml` into a repo
-and fill in `__ORG__/__IMAGE__`, `__GCP_PROJECT__`, `__DOCKERHUB_NS__`.
+GHCR uses the workflow token. Docker Hub requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. GCP uses Workload Identity Federation through `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT`; JSON service-account keys do not belong in GitHub.
 
-## `scripts/render-dkf.mjs`
+Copy `templates/images.yml` into a repository only after replacing all five placeholders:
 
-`Dockerfile` stays the single authored file. The two `.dkf` files are **derived**:
-each `FROM` gets `--platform=linux/<arch>` (stage aliases and `$BUILDPLATFORM`
-cross-builders are left alone), `ARG TARGETARCH` is declared, and a header records the
-source digest. `render-dkf.mjs <dir> --check` fails CI on drift, so nobody edits a `.dkf`
-by hand. `npm test` covers the transform.
+- `__DEFAULT_BRANCH__`
+- `__ORG__`
+- `__IMAGE__`
+- `__GCP_PROJECT__` (empty string is an explicit temporary skip)
+- `__DOCKERHUB_NS__` (empty string is an explicit skip)
+
+Do not replace the reusable-workflow SHA with `main`, a version tag, or another mutable ref.
+
+## Source and derivation policy
+
+`Dockerfile` remains the authored source. `scripts/render-dkf.mjs` derives `Dockerfile.arm64.dkf` and `Dockerfile.x86-64.dkf`; stage aliases and `$BUILDPLATFORM` builders remain architecture-neutral. A source digest in each header makes drift detectable.
+
+`scripts/validate-container-source.mjs` rejects:
+
+- external images without an explicit tag or immutable digest;
+- the mutable `latest` tag;
+- Node container majors below 22;
+- Dockerfiles with no external base image.
+
+These checks intentionally stop legacy images such as `node:10` before they are copied into ARM64/AMD64 variants and published under new tags. Modernize the source Dockerfile first; never treat architecture derivation as an excuse to preserve an unsupported runtime.
+
+## Validation
+
+Run:
+
+```sh
+npm test
+```
+
+The suite covers deterministic Dockerfile derivation, source-image policy, immutable Action references, pull-request permission separation, digest handoff, exact policy-tool downloads, and shell-injection boundaries. Repository CI also runs `actionlint` from a digest-pinned container.
