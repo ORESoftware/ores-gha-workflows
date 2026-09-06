@@ -14,25 +14,22 @@ FROM node:24-bookworm-slim AS runtime
 });
 
 test('rejects the mutable latest tag', () => {
-  assert.deepEqual(
-    validateContainerSource('FROM node:latest\n'),
-    ['line 1: external image node:latest uses the mutable latest tag',
-     'line 1: Node image node:latest must declare a numeric major or immutable digest'],
-  );
+  assert.deepEqual(validateContainerSource('FROM node:latest\n'), [
+    'line 1: external image node:latest uses the mutable latest tag',
+    'line 1: Node image node:latest must declare a numeric major or immutable digest',
+  ]);
 });
 
 test('rejects unsupported Node majors', () => {
-  assert.deepEqual(
-    validateContainerSource('FROM node:10\n'),
-    ['line 1: Node 10 is below the supported container baseline (22+)'],
-  );
+  assert.deepEqual(validateContainerSource('FROM node:10\n'), [
+    'line 1: Node 10 is below the supported container baseline (22+)',
+  ]);
 });
 
 test('rejects untagged external images', () => {
-  assert.deepEqual(
-    validateContainerSource('FROM debian\n'),
-    ['line 1: external image debian has no explicit tag or digest'],
-  );
+  assert.deepEqual(validateContainerSource('FROM debian\n'), [
+    'line 1: external image debian has no explicit tag or digest',
+  ]);
 });
 
 test('accepts immutable digest references', () => {
@@ -41,10 +38,7 @@ test('accepts immutable digest references', () => {
 });
 
 test('requires at least one external image', () => {
-  assert.deepEqual(
-    validateContainerSource('FROM builder AS tests\n'),
-    [
-      'line 1: external image builder has no explicit tag or digest',
-    ],
-  );
+  assert.deepEqual(validateContainerSource('# no image yet\n'), [
+    'Dockerfile contains no external FROM image',
+  ]);
 });
