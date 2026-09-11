@@ -43,7 +43,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     permissions:
       contents: read
-    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@d3896ec92f1f16a446b66a5a3a80b9914e33dbe7
+    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@aee40347aac0b4a23fb0da38326540228741975c
     with:
       image-name: "__ORG__/__IMAGE__"
       gcp-project: "__GCP_PROJECT__"
@@ -56,7 +56,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@d3896ec92f1f16a446b66a5a3a80b9914e33dbe7
+    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@aee40347aac0b4a23fb0da38326540228741975c
     with:
       image-name: "__ORG__/__IMAGE__"
       gcp-project: "__GCP_PROJECT__"
