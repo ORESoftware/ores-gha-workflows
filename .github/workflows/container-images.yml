@@ -65,11 +65,8 @@ on:
       manifest:
         value: ${{ jobs.manifest.outputs.manifest }}
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
-
+# Permissions intentionally inherit from the caller. Verification callers can grant
+# only contents: read; publishing callers opt in to packages: write and id-token: write.
 jobs:
   plan:
     runs-on: ubuntu-24.04
