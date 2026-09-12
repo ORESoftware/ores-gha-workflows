@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         description: Publication is opt-in; pull-request validation must leave this false
+      submodules:
+        type: string
+        required: false
+        default: "false"
+        description: Use recursive only for reviewed callers whose build graph depends on repository gitlinks
       gcp-region:
         type: string
         required: false
@@ -78,6 +83,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: ${{ inputs.submodules }}
 
       - id: plan
         name: Validate inputs and build an immutable plan
@@ -88,6 +94,7 @@ jobs:
           GCP_REGION: ${{ inputs.gcp-region }}
           GCP_PROJECT: ${{ inputs.gcp-project }}
           DOCKERHUB_NAMESPACE: ${{ inputs.dockerhub-namespace }}
+          SUBMODULES: ${{ inputs.submodules }}
           WANT_ARM64: ${{ inputs.arm64 }}
           WANT_AMD64: ${{ inputs.amd64 }}
         run: |
@@ -111,6 +118,9 @@ jobs:
           }
           [[ -z "$DOCKERHUB_NAMESPACE" || "$DOCKERHUB_NAMESPACE" =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] || {
             echo "::error::dockerhub-namespace is invalid"; exit 1;
+          }
+          [[ "$SUBMODULES" == "false" || "$SUBMODULES" == "recursive" ]] || {
+            echo "::error::submodules must be false or recursive"; exit 1;
           }
           [[ "$WANT_ARM64" == "true" || "$WANT_AMD64" == "true" ]] || {
             echo "::error::at least one architecture must be enabled"; exit 1;
@@ -187,6 +197,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: ${{ inputs.submodules }}
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Validate publication credentials
