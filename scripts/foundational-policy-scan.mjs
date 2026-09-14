@@ -1,18 +1,18 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const selfRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SHA40 = /^[0-9a-f]{40}$/i;
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const COMMON_MANIFESTS = new Set([
   'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock',
   'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum', 'pubspec.yaml', 'pubspec.lock',
   'gleam.toml', 'mix.exs', 'rebar.config', 'pom.xml', 'build.gradle', 'build.gradle.kts',
   'Package.swift', 'flake.nix', 'flake.lock', '.gitmodules', '.zpkg.toml', '.cli-flags.toml',
 ]);
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.dart_tool', '.venv', 'vendor']);
+const SKIP_DIRS = new Set(['.git', '.ores-policy', 'node_modules', 'target', 'dist', 'build', '.dart_tool', '.venv', 'vendor']);
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -93,7 +93,10 @@ function defaultManifests(root) {
   });
 }
 function parseArgs(argv) {
-  const out = { root: '.', manifests: [], all: false, selfTest: false, report: null, expectedDigest: null, policy: null };
+  const out = {
+    root: '.', manifests: [], all: false, selfTest: false, report: null, expectedDigest: null,
+    policy: null, repository: null, headSha: null,
+  };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--root') out.root = argv[++i];
@@ -103,6 +106,8 @@ function parseArgs(argv) {
     else if (arg === '--report') out.report = argv[++i];
     else if (arg === '--expected-digest') out.expectedDigest = argv[++i];
     else if (arg === '--policy') out.policy = argv[++i];
+    else if (arg === '--repository') out.repository = argv[++i];
+    else if (arg === '--head-sha') out.headSha = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
   return out;
@@ -148,6 +153,12 @@ const expectedDigest = args.expectedDigest ?? fs.readFileSync(path.join(path.dir
 if (!/^[0-9a-f]{64}$/i.test(expectedDigest)) policyErrors.push('expected policy digest must be 64-hex SHA-256');
 if (actualDigest !== expectedDigest) policyErrors.push(`policy digest mismatch: expected ${expectedDigest}, got ${actualDigest}`);
 
+const targetSupplied = args.repository !== null || args.headSha !== null;
+if (targetSupplied) {
+  if (!REPOSITORY.test(args.repository ?? '')) policyErrors.push('target repository must be owner/name');
+  if (!SHA40.test(args.headSha ?? '')) policyErrors.push('target head SHA must be 40 hex');
+}
+
 let files;
 if (args.manifests.length) files = args.manifests.map((item) => path.resolve(root, item));
 else if (args.all) files = walk(root);
@@ -170,6 +181,7 @@ for (const file of files.sort()) {
 const forbidden = findings.filter((item) => item.classification === 'forbidden_mutable_reference');
 const report = {
   schema: 'ores.foundational-policy-report/v1',
+  target: targetSupplied ? { repository: args.repository, head_sha: args.headSha } : null,
   policy_source: policy.source,
   policy_digest: actualDigest,
   scanned_files: files.length,
