@@ -1,0 +1,68 @@
+{
+  "compatibility_remotes": [
+    {
+      "canonical_repository": "flags-2-env/flags-2-env",
+      "immutable_historical_allowed": true,
+      "repository": "ORESoftware/flags-2-env"
+    },
+    {
+      "canonical_repository": "ores-otel/ores.otel.log",
+      "immutable_historical_allowed": true,
+      "repository": "ORESoftware/next-loggers.ts"
+    },
+    {
+      "canonical_repository": "ores-otel/ores-otel-sidecar.rs",
+      "immutable_historical_allowed": true,
+      "repository": "ORESoftware/ores-sidecar.rs"
+    }
+  ],
+  "legacy_repositories": [
+    {
+      "immutable_historical_allowed": true,
+      "repository": "ORESoftware/ores-streams"
+    },
+    {
+      "immutable_historical_allowed": true,
+      "repository": "ORESoftware/ores-shell"
+    }
+  ],
+  "repositories": [
+    {"repository":"ORESoftware/typespec-json-schema-validator","status":"active"},
+    {"repository":"ORESoftware/ores-contracts","status":"active"},
+    {"repository":"ORESoftware/ores-interfaces","status":"active"},
+    {"repository":"ORESoftware/api-docs","status":"active"},
+    {"repository":"ORESoftware/k8s-libs-and-shared-defs","status":"active"},
+    {"repository":"ORESoftware/ores-middleware","status":"active"},
+    {"repository":"ORESoftware/ores-transport","status":"active"},
+    {"repository":"ORESoftware/ores-locks-and-leases","status":"active"},
+    {"repository":"ORESoftware/ores-sops","status":"active"},
+    {"repository":"flags-2-env/flags-2-env","status":"active"},
+    {"repository":"ORESoftware/ores-cli","status":"active"},
+    {"repository":"ORESoftware/ores-gh-bots","status":"active"},
+    {"repository":"ORESoftware/ores-gha-workflows","status":"active"},
+    {"repository":"ores-otel/ores.otel.log","status":"active"},
+    {"canonical_repository":"ores-otel/ores-otel-sidecar.rs","repository":"ORESoftware/ores-sidecar.rs","status":"compatibility"},
+    {"repository":"ORESoftware/ores-edge-router","status":"active"},
+    {"repository":"ORESoftware/ores-lambdas-template","status":"active"},
+    {"repository":"ORESoftware/ores-compose","status":"active"},
+    {"repository":"ORESoftware/ores-supabase","status":"active"},
+    {"repository":"ORESoftware/ores-sw.js","status":"active"},
+    {"repository":"ORESoftware/ores-web-loader","status":"active"},
+    {"repository":"ORESoftware/ores-dnd","status":"active"},
+    {"repository":"ORESoftware/ores-flutter","status":"active"},
+    {"repository":"ORESoftware/ores-desktop-app-libs","status":"active"},
+    {"repository":"ORESoftware/ores-mobile-bg-procs","status":"active"},
+    {"repository":"ORESoftware/ores-desktop-bg-procs","status":"active"},
+    {"repository":"ORESoftware/ores-codex-plugin","status":"active"},
+    {"repository":"ORESoftware/k8s-cluster","status":"active"},
+    {"repository":"ORESoftware/ores-streams","status":"legacy"},
+    {"repository":"ORESoftware/ores-shell","status":"legacy"}
+  ],
+  "schema": "ores.foundational-policy-snapshot/v1",
+  "source": {
+    "blob_sha": "6a6a066bc4d4683de0247f992fe72121347a1759",
+    "commit": "58a0a99b8a98b0591c3d0880c57510663460ed93",
+    "path": "docs/foundational-repositories.json",
+    "repository": "ORESoftware/.github"
+  }
+}
