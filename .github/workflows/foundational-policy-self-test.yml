@@ -1,0 +1,39 @@
+name: foundational policy self-test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/foundational-policy.yml'
+      - '.github/workflows/foundational-policy-self-test.yml'
+      - 'policy/**'
+      - 'scripts/foundational-policy-scan.mjs'
+      - 'tests/foundational-policy-cases.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/foundational-policy.yml'
+      - '.github/workflows/foundational-policy-self-test.yml'
+      - 'policy/**'
+      - 'scripts/foundational-policy-scan.mjs'
+      - 'tests/foundational-policy-cases.json'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.16.0'
+      - run: node --check scripts/foundational-policy-scan.mjs
+      - run: node scripts/foundational-policy-scan.mjs --self-test
+      - name: Scan this repository's dependency/workflow manifests
+        run: node scripts/foundational-policy-scan.mjs --root . --report /tmp/foundational-policy-report.json
+      - name: Verify report shape
+        run: node -e "const r=require('/tmp/foundational-policy-report.json'); if(r.schema!=='ores.foundational-policy-report/v1'||r.policy_errors.length||r.forbidden_count) process.exit(1)"

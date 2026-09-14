@@ -1,0 +1,14 @@
+{
+  "reference_cases": [
+    {"name":"active","text":"ORESoftware/ores-middleware@main","expected":"clean"},
+    {"name":"compatibility_mutable","text":"ORESoftware/next-loggers.ts@main","expected":"forbidden_mutable_reference"},
+    {"name":"compatibility_immutable","text":"ORESoftware/next-loggers.ts@0123456789abcdef0123456789abcdef01234567","expected":"immutable_historical_reference"},
+    {"name":"canonical_redirect","text":"ores-otel/ores.otel.log@main","expected":"clean"},
+    {"name":"legacy_mutable","text":"ORESoftware/ores-shell@main","expected":"forbidden_mutable_reference"},
+    {"name":"legacy_immutable","text":"ORESoftware/ores-streams#0123456789abcdef0123456789abcdef01234567","expected":"immutable_historical_reference"}
+  ],
+  "policy_cases": [
+    {"name":"malformed_registry","mutation":"delete_schema","expected":"invalid_policy"},
+    {"name":"tampered_digest","mutation":"wrong_digest","expected":"digest_mismatch"}
+  ]
+}
