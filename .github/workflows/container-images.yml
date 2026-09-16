@@ -32,6 +32,11 @@ on:
         required: false
         default: "false"
         description: Use recursive only for reviewed callers whose build graph depends on repository gitlinks
+      prepare_script:
+        type: string
+        required: false
+        default: ""
+        description: Optional repository-relative shell script that prepares credential-free build inputs after checkout
       gcp-region:
         type: string
         required: false
@@ -84,6 +89,30 @@ jobs:
         with:
           persist-credentials: false
           submodules: ${{ inputs.submodules }}
+
+      - name: Prepare credential-free caller inputs
+        if: ${{ inputs.prepare_script != '' }}
+        shell: bash
+        env:
+          PREPARE_SCRIPT: ${{ inputs.prepare_script }}
+        run: |
+          set -euo pipefail
+          [[ "$PREPARE_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]] || {
+            echo "::error::prepare_script must be a repository-relative path"; exit 1;
+          }
+          [[ "$PREPARE_SCRIPT" != /* ]] || {
+            echo "::error::prepare_script must not be absolute"; exit 1;
+          }
+          IFS='/' read -ra prepare_parts <<< "$PREPARE_SCRIPT"
+          for part in "${prepare_parts[@]}"; do
+            [[ -n "$part" && "$part" != ".." ]] || {
+              echo "::error::prepare_script may not be empty or traverse parents"; exit 1;
+            }
+          done
+          [[ -f "$PREPARE_SCRIPT" ]] || {
+            echo "::error::prepare_script does not exist: $PREPARE_SCRIPT"; exit 1;
+          }
+          bash "$PREPARE_SCRIPT"
 
       - id: plan
         name: Validate inputs and build an immutable plan
@@ -198,6 +227,31 @@ jobs:
         with:
           persist-credentials: false
           submodules: ${{ inputs.submodules }}
+
+      - name: Prepare credential-free caller inputs
+        if: ${{ inputs.prepare_script != '' }}
+        shell: bash
+        env:
+          PREPARE_SCRIPT: ${{ inputs.prepare_script }}
+        run: |
+          set -euo pipefail
+          [[ "$PREPARE_SCRIPT" =~ ^[A-Za-z0-9._/-]+$ ]] || {
+            echo "::error::prepare_script must be a repository-relative path"; exit 1;
+          }
+          [[ "$PREPARE_SCRIPT" != /* ]] || {
+            echo "::error::prepare_script must not be absolute"; exit 1;
+          }
+          IFS='/' read -ra prepare_parts <<< "$PREPARE_SCRIPT"
+          for part in "${prepare_parts[@]}"; do
+            [[ -n "$part" && "$part" != ".." ]] || {
+              echo "::error::prepare_script may not be empty or traverse parents"; exit 1;
+            }
+          done
+          [[ -f "$PREPARE_SCRIPT" ]] || {
+            echo "::error::prepare_script does not exist: $PREPARE_SCRIPT"; exit 1;
+          }
+          bash "$PREPARE_SCRIPT"
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Validate publication credentials
