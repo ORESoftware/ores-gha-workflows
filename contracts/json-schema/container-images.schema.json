@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ORESoftware/ores-gha-workflows/contracts/json-schema/container-images.schema.json",
+  "title": "container-images reusable workflow contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["inputs", "secrets", "outputs", "publication_policy"],
+  "properties": {
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image-name"],
+      "properties": {
+        "image-name": {"type": "string", "minLength": 3},
+        "context": {"type": "string", "default": "."},
+        "arm64": {"type": "boolean", "default": true},
+        "amd64": {"type": "boolean", "default": true},
+        "push": {"type": "boolean", "default": false},
+        "submodules": {"enum": ["false", "recursive"], "default": "false"},
+        "prepare_script": {"type": "string", "default": ""},
+        "gcp-region": {"type": "string", "default": "us-central1"},
+        "gcp-project": {"type": "string", "default": ""},
+        "dockerhub-namespace": {"type": "string", "default": ""},
+        "build-args": {"type": "string", "default": ""}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "DOCKERHUB_USERNAME": {"type": "string"},
+        "DOCKERHUB_TOKEN": {"type": "string"},
+        "GCP_WORKLOAD_IDENTITY_PROVIDER": {"type": "string"},
+        "GCP_SERVICE_ACCOUNT": {"type": "string"},
+        "BUILD_SECRET_GITHUB_TOKEN": {"type": "string"}
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "arm64-digest": {"type": "string"},
+        "amd64-digest": {"type": "string"},
+        "manifest": {"type": "string"}
+      }
+    },
+    "publication_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["push_default", "pull_request_publish", "immutable_action_refs", "gcp_auth"],
+      "properties": {
+        "push_default": {"const": false},
+        "pull_request_publish": {"const": false},
+        "immutable_action_refs": {"const": true},
+        "gcp_auth": {"const": "workload-identity"}
+      }
+    }
+  }
+}
