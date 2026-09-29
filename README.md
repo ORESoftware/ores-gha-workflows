@@ -55,3 +55,19 @@ npm test
 ```
 
 The suite covers deterministic Dockerfile derivation, source-image policy, immutable Action references, pull-request permission separation, digest handoff, exact policy-tool downloads, and shell-injection boundaries. Repository CI also runs `actionlint` from a digest-pinned container.
+
+
+## `actions/workflow-security`
+
+The public composite action validates `.github/workflows` and `.github/actions` with a dependency-free Rust checker. Remote GitHub actions and reusable workflows must use a full 40-character commit SHA; `docker://` actions must use an explicit `sha256` digest. Local `./` actions remain valid.
+
+Callers should check out their exact candidate without persisted credentials and pin this action to an immutable reviewed commit:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+  with:
+    persist-credentials: false
+- uses: ORESoftware/ores-gha-workflows/actions/workflow-security@<immutable-commit-sha>
+```
+
+The action compiles and runs its Rust unit tests before scanning the caller, writes only under `RUNNER_TEMP`, and requires no repository-write permission or private cross-organization credential.
