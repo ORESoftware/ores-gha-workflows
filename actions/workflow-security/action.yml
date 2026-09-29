@@ -1,0 +1,27 @@
+name: ORES workflow security
+description: Validate GitHub Actions and reusable workflow references using the fleet Rust policy.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned minimal Rust toolchain
+      shell: bash
+      run: rustup toolchain install 1.90.0 --profile minimal --no-self-update
+
+    - name: Compile and self-test workflow security validator
+      shell: bash
+      env:
+        VALIDATOR_SOURCE: ${{ github.action_path }}/../../tools/workflow_security.rs
+      run: |
+        set -euo pipefail
+        out="${RUNNER_TEMP}/ores-workflow-security"
+        mkdir -p "$out"
+        rustup run 1.90.0 rustc --edition=2021 -D warnings --test "$VALIDATOR_SOURCE" -o "$out/tests"
+        "$out/tests"
+        rustup run 1.90.0 rustc --edition=2021 -D warnings "$VALIDATOR_SOURCE" -o "$out/check"
+
+    - name: Validate workflow and composite-action references
+      shell: bash
+      run: |
+        set -euo pipefail
+        "${RUNNER_TEMP}/ores-workflow-security/check" .github/workflows .github/actions
