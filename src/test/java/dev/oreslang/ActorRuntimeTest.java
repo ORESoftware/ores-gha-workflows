@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -188,6 +190,46 @@ final class ActorRuntimeTest {
             assertTrue(entered.await(1, TimeUnit.SECONDS));
             assertEventuallyUnknownActor(ref);
         }
+    }
+
+    @Test
+    void freezeRejectsGraphsThatExceedNodeBudget() {
+        List<Integer> tooManyNodes = Collections.nCopies(100_001, 1);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(tooManyNodes));
+
+        assertTrue(error.getMessage().contains("maximum graph size"), error.getMessage());
+    }
+
+    @Test
+    void freezeRejectsSetElementsThatCollideOnlyAfterFreezing() {
+        ActorRuntime.Shared<int[]> first = new ActorRuntime.Shared<>(new int[] {1});
+        ActorRuntime.Shared<int[]> second = new ActorRuntime.Shared<>(new int[] {1});
+        LinkedHashSet<Object> source = new LinkedHashSet<>();
+        source.add(first);
+        source.add(second);
+        assertEquals(2, source.size());
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(source));
+
+        assertTrue(error.getMessage().contains("set elements collide"), error.getMessage());
+    }
+
+    @Test
+    void freezeRejectsMapKeysThatCollideOnlyAfterFreezing() {
+        ActorRuntime.Shared<int[]> first = new ActorRuntime.Shared<>(new int[] {1});
+        ActorRuntime.Shared<int[]> second = new ActorRuntime.Shared<>(new int[] {1});
+        LinkedHashMap<Object, String> source = new LinkedHashMap<>();
+        source.put(first, "first");
+        source.put(second, "second");
+        assertEquals(2, source.size());
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(source));
+
+        assertTrue(error.getMessage().contains("map keys collide"), error.getMessage());
     }
 
     @Test
