@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -542,6 +543,60 @@ final class ActorRuntimeTest {
                 current = current.getCause();
             }
             assertTrue(deadline, String.valueOf(observed.get()));
+        }
+    }
+
+    @Test
+    void actorCanCloseItsOwnRuntimeWithoutDeadlocking() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch returnedFromClose = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            entered.countDown();
+            context.runtime().close();
+            returnedFromClose.countDown();
+        });
+
+        ref.send("shutdown");
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertTrue(returnedFromClose.await(1, TimeUnit.SECONDS),
+                "actor deadlocked while closing its own runtime");
+        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
+        assertThrows(IllegalStateException.class,
+                () -> runtime.<String>spawn(() -> (message, context) -> { }));
+    }
+
+    @Test
+    void sendRacingWithRuntimeCloseNeverSucceedsAfterCloseReturns() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            started.countDown();
+            release.await(1, TimeUnit.SECONDS);
+        });
+
+        ref.send("block");
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+
+        CompletableFuture<Void> closing = CompletableFuture.runAsync(runtime::close);
+        for (int i = 0; i < 100 && !closing.isDone(); i++) {
+            try {
+                ref.send("racing");
+            } catch (IllegalStateException expected) {
+                break;
+            }
+            Thread.yield();
+        }
+
+        release.countDown();
+        closing.join();
+
+        for (int i = 0; i < 16; i++) {
+            assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
         }
     }
 

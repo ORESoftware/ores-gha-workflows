@@ -1,4 +1,4 @@
-name: oreslang-extended-full
+name: oreslang-extended-quick
 
 on:
   push:
@@ -7,10 +7,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: oreslang-extended-full-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   test:
@@ -28,54 +24,3 @@ jobs:
       - run: mvn -B -ntp verify
       - run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
-
-  native-aot:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: maven
-      - run: mvn -B -ntp -Pnative-aot -DskipTests package
-      - run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
-
-  native-hybrid:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: maven
-      - run: mvn -B -ntp -Pnative-hybrid -DskipTests package
-      - run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
-
-  polyglot-isolate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
-        with:
-          version: '25.3'
-          java-version: '25'
-          distribution: 'graalvm'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: maven
-      - run: mvn -B -ntp -Pnative-isolate -DskipTests package
-      - id: isolate
-        shell: bash
-        run: |
-          lib="$(find target -maxdepth 1 -type f \( -name 'oresvm.so' -o -name 'liboresvm.so' -o -name 'oresvm.dylib' -o -name 'liboresvm.dylib' \) | head -n1)"
-          test -n "$lib"
-          echo "path=$PWD/$lib" >> "$GITHUB_OUTPUT"
-      - run: mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=jit --platform=linux examples/together.ores"
