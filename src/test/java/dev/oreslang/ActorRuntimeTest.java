@@ -447,6 +447,39 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void runtimeCloseStopsActorEvenWhenMailboxIsSaturated() throws Exception {
+        IsolatePolicy tinyMailbox = new IsolatePolicy(
+                Set.of(),
+                32L * 1024 * 1024,
+                1,
+                Duration.ofSeconds(1));
+
+        ActorRuntime runtime = new ActorRuntime(tinyMailbox);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch stopped = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(tinyMailbox, () -> (message, context) -> {
+            entered.countDown();
+            try {
+                new CountDownLatch(1).await();
+            } finally {
+                stopped.countDown();
+            }
+        });
+
+        ref.send("active");
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        ref.send("queued"); // saturates the one-slot mailbox while the actor is blocked
+
+        runtime.close();
+
+        assertTrue(stopped.await(1, TimeUnit.SECONDS),
+                "runtime shutdown must not depend on successfully enqueueing the STOP sentinel");
+        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
+        assertDoesNotThrow(runtime::close);
+    }
+
+    @Test
     void actorMailboxBackpressureRejectsBeyondConfiguredCapacity() throws Exception {
         IsolatePolicy tinyMailbox = new IsolatePolicy(
                 Set.of(),

@@ -2420,6 +2420,53 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void staleHandleFromRetryableInitializationFailureNeverTargetsReplacementCell() {
+        String key = "stale-retry-handle:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> failed =
+                ProcessSingletonRegistry.getOrCreate(key, () -> {
+                    throw new IllegalStateException("initialization failed");
+                });
+
+        RuntimeException initialFailure = assertThrows(
+                RuntimeException.class,
+                () -> failed.call(
+                        List.of(),
+                        (state, ignored) -> state.incrementAndGet())
+                        .toCompletableFuture()
+                        .join());
+        assertTrue(causeChainContains(initialFailure, "initialization failed"), String.valueOf(initialFailure));
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> replacement =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+        assertNotEquals(failed.instanceId(), replacement.instanceId());
+
+        Object freshValue = replacement.call(
+                List.of(),
+                (state, ignored) -> state.incrementAndGet())
+                .toCompletableFuture()
+                .join();
+        assertEquals(1L, ((Number) freshValue).longValue());
+
+        RuntimeException staleFailure = assertThrows(
+                RuntimeException.class,
+                () -> failed.call(
+                        List.of(),
+                        (state, ignored) -> state.addAndGet(1000))
+                        .toCompletableFuture()
+                        .join());
+        assertTrue(causeChainContains(staleFailure, "initialization failed"), String.valueOf(staleFailure));
+
+        Object unchanged = replacement.call(
+                List.of(),
+                (state, ignored) -> state.get())
+                .toCompletableFuture()
+                .join();
+        assertEquals(1L, ((Number) unchanged).longValue(),
+                "stale failed handle must never dispatch into the replacement singleton cell");
+    }
+
+    @Test
     void registryCreatesOneActorAndSerializesConcurrentCalls() {
         String key = "test:" + UUID.randomUUID();
         AtomicInteger initializations = new AtomicInteger();

@@ -157,6 +157,38 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void concurrentStartAndRetireAlwaysLeaveGenerationDetachedAndClosed() throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.load("start-retire-race.ores", """
+                    pub routine main() => void {
+                      for (;;) {
+                      }
+                    }
+                    """);
+
+            CompletableFuture<Throwable> startOutcome = CompletableFuture.supplyAsync(() -> {
+                try {
+                    generation.start();
+                    return null;
+                } catch (Throwable failure) {
+                    return failure;
+                }
+            });
+
+            Thread.sleep(25);
+            generation.close();
+
+            Throwable outcome = startOutcome.get(2, TimeUnit.SECONDS);
+            assertNotNull(outcome, "retiring a nonterminating generation must stop its active/start race");
+            assertTrue(generation.closed());
+            assertNull(hot.active("start-retire-race.ores"));
+            assertEquals(0, hot.liveGenerations());
+            assertThrows(IllegalStateException.class, generation::start);
+        }
+    }
+
+    @Test
     void staleHotReloadGenerationCannotRollBackSingletonCode() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
