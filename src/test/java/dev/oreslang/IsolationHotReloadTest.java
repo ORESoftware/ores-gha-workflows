@@ -238,6 +238,60 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void retiringLatestGenerationFallsBackPerCodeUnitAndGlobally() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var a1 = hot.load("unit-a.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            var b1 = hot.load("unit-b.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            var a2 = hot.load("unit-a.ores", """
+                    pub routine main() => void {
+                      val version = 2;
+                      return;
+                    }
+                    """);
+
+            assertEquals(a2.id(), hot.active("unit-a.ores").id());
+            assertEquals(b1.id(), hot.active("unit-b.ores").id());
+            assertEquals(a2.id(), hot.active().id());
+
+            a2.close();
+
+            assertEquals(a1.id(), hot.active("unit-a.ores").id());
+            assertEquals(b1.id(), hot.active().id());
+
+            b1.close();
+
+            assertNull(hot.active("unit-b.ores"));
+            assertEquals(a1.id(), hot.active().id());
+        }
+    }
+
+    @Test
+    void rejectedLoadDoesNotPoisonManagerAndLaterLoadStillWorks() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            assertThrows(RuntimeException.class, () -> hot.load("invalid.ores", """
+                    pub routine main( => void {
+                    }
+                    """));
+
+            assertEquals(0, hot.liveGenerations());
+            assertNull(hot.active());
+
+            var recovered = hot.load("valid.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            assertEquals(1, hot.liveGenerations());
+            assertEquals(recovered.id(), hot.active().id());
+            assertDoesNotThrow(recovered::start);
+        }
+    }
+
+    @Test
     void reservedOresPolicyArgumentsCannotBeOverriddenByExtraMetadata() {
         IsolatePolicy policy = IsolatePolicy.developer();
 

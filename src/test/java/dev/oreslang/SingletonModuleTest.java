@@ -1308,6 +1308,55 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void crossSingletonCommitIsNotRolledBackByLaterCallerFailure() throws Exception {
+        String output = eval("""
+                define singleton module independent_transaction_b as
+                  let int count = 0;
+
+                  pub fnc increment() => int {
+                    count = count + 1;
+                    return count;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define singleton module independent_transaction_a as
+                  let int count = 0;
+
+                  pub fnc call_b_then_fail() => int {
+                    val int committed = await independent_transaction_b.increment();
+                    count = count + committed;
+                    val Array<int> values = arr[1];
+                    return values[99];
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      val int ignored = await independent_transaction_a.call_b_then_fail();
+                    } catch (err) {
+                    }
+
+                    stdio.println(await independent_transaction_a.read());
+                    stdio.println(await independent_transaction_b.read());
+                    return;
+                  }
+                end
+                """, "singleton-independent-transactions.ores");
+
+        assertTrue(output.lines().anyMatch(line -> line.trim().equals("0")), output);
+        assertTrue(output.lines().anyMatch(line -> line.trim().equals("1")), output);
+    }
+
+    @Test
     void failedSingletonRequestRollsBackAllProcessStateMutation() throws Exception {
         String output = eval("""
                 define singleton module transactional_failure_guard as
@@ -1705,6 +1754,40 @@ final class SingletonModuleTest {
                 List.of(), 1, Duration.ofSeconds(2),
                 (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
         assertTrue(queued.cancel(false));
+
+        CompletableFuture<Object> replacement = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+
+        release.countDown();
+        assertEquals(1L, ((Number) active.join()).longValue());
+        assertEquals(2L, ((Number) replacement.join()).longValue());
+    }
+
+    @Test
+    void repeatedQueuedCancellationDoesNotLeakMailboxAccounting() throws Exception {
+        String key = "cancel-churn:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Object> active = handle.call(
+                List.of(), 1, Duration.ofSeconds(3),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(2, TimeUnit.SECONDS);
+                    return state.incrementAndGet();
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+        for (int i = 0; i < 128; i++) {
+            CompletableFuture<Object> queued = handle.call(
+                    List.of(), 1, Duration.ofSeconds(2),
+                    (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+            assertTrue(queued.cancel(false), "queued cancellation failed at iteration " + i);
+        }
 
         CompletableFuture<Object> replacement = handle.call(
                 List.of(), 1, Duration.ofSeconds(2),
