@@ -294,7 +294,10 @@ public final class OresEvalRootNode extends RootNode {
             // Do not cache handles per evaluator. A retryable initialization
             // failure replaces the registry cell; every access must resolve the
             // current process cell rather than pinning a stale failed handle.
-            return ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module));
+            return ProcessSingletonRegistry.getOrCreate(
+                    key,
+                    context.isolatePolicy().maxWallTime(),
+                    () -> initializeSingleton(module));
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
@@ -612,7 +615,8 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("private singleton callable '" + owner.name() + "."
                                     + fn.name() + "' is actor-private");
                         }
-                        return (Invokable) args -> callSingleton(owner, fn, normalizeArgs(fn, args));
+                        return (Invokable) args -> new SingletonReply(
+                                callSingleton(owner, fn, normalizeArgs(fn, args)));
                     }
                     return (Invokable) args -> callFunctionDirect(fn, normalizeArgs(fn, args));
                 }
@@ -694,7 +698,8 @@ public final class OresEvalRootNode extends RootNode {
                         return invokeMethod(object, methodCall.member(), args, env.singletonState);
                     }
                     if (receiver instanceof SingletonObjectProxy proxy) {
-                        return invokeSingletonProxy(proxy, methodCall.member(), args);
+                        return new SingletonReply(
+                                invokeSingletonProxy(proxy, methodCall.member(), args));
                     }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args, klass.localState());
@@ -707,7 +712,8 @@ public final class OresEvalRootNode extends RootNode {
                                 if (moduleFacade.localState() != null) {
                                     return callSingletonFunction(moduleFacade.localState(), function, normalizeArgs(function, args));
                                 }
-                                return callSingleton(moduleFacade.module(), function, normalizeArgs(function, args));
+                                return new SingletonReply(
+                                        callSingleton(moduleFacade.module(), function, normalizeArgs(function, args)));
                             }
                             return callFunctionDirect(function, normalizeArgs(function, args));
                         }
@@ -757,9 +763,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) {
-                    Object frozen = stage.toCompletableFuture().join();
+                if (value instanceof SingletonReply singletonReply) {
+                    Object frozen = singletonReply.stage().toCompletableFuture().join();
                     return ActorRuntime.materializeOwned(frozen);
+                }
+                if (value instanceof CompletionStage<?> stage) {
+                    return stage.toCompletableFuture().join();
                 }
                 return value;
             }
@@ -1477,6 +1486,7 @@ public final class OresEvalRootNode extends RootNode {
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
     private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
+    private record SingletonReply(CompletionStage<Object> stage) { }
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}

@@ -348,6 +348,11 @@ public final class TypeChecker {
                 initializedFields.add(field.name());
             }
 
+            if (decl instanceof Ast.FunctionDecl fn && fn.name().equals("main")) {
+                throw new IllegalArgumentException("singleton module '" + module.name()
+                        + "' cannot declare main; the process entrypoint must remain outside singleton actor ownership");
+            }
+
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
                 if (fn.async()) {
                     throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
@@ -1550,6 +1555,12 @@ public final class TypeChecker {
             validateSingletonTransportExpr(conditional.whenTrue(), currentModule);
             validateSingletonTransportExpr(conditional.whenFalse(), currentModule);
         } else if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.MemberExpr exported
+                    && isExternalSingletonProxyFieldMember(exported, currentModule)) {
+                Ast.NameExpr namespace = (Ast.NameExpr) exported.receiver();
+                throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
+                        + namespace.name() + "." + exported.member());
+            }
             if (isExternalSingletonFunctionMember(member, currentModule)) {
                 throw new IllegalArgumentException("singleton service function values cannot be extracted; call and await "
                         + ((Ast.NameExpr) member.receiver()).name() + "." + member.member() + "(...) directly");
