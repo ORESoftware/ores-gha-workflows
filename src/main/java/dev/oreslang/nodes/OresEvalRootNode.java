@@ -340,45 +340,23 @@ public final class OresEvalRootNode extends RootNode {
                     schema.append(field.name())
                             .append(':').append(field.bindingKind())
                             .append(':').append(field.type());
-                    appendPersistedTypeSchema(field.type(), schema, new LinkedHashSet<>());
+                    Ast.ClassDecl stateClass = field.type() == null ? null : findClass(field.type().name());
+                    if (stateClass != null) {
+                        schema.append(":class=").append(runtimeClassId(stateClass)).append('{');
+                        for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>()).stream()
+                                .sorted(Comparator.comparing(Ast.FieldDecl::name))
+                                .toList()) {
+                            schema.append(classField.name())
+                                    .append(':').append(classField.bindingKind())
+                                    .append(':').append(classField.type())
+                                    .append(';');
+                        }
+                        schema.append('}');
+                    }
                     schema.append(';');
                 }
                 return schema.toString();
             });
-        }
-
-        private void appendPersistedTypeSchema(
-                Ast.TypeRef type,
-                StringBuilder schema,
-                Set<String> visitingClasses) {
-            if (type == null) return;
-
-            Ast.ClassDecl stateClass = findClass(type.name());
-            if (stateClass == null) {
-                for (Ast.TypeRef argument : type.arguments()) {
-                    appendPersistedTypeSchema(argument, schema, visitingClasses);
-                }
-                return;
-            }
-
-            String classId = runtimeClassId(stateClass);
-            if (!visitingClasses.add(classId)) {
-                schema.append(":class-ref=").append(classId);
-                return;
-            }
-
-            schema.append(":class=").append(classId).append('{');
-            for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>()).stream()
-                    .sorted(Comparator.comparing(Ast.FieldDecl::name))
-                    .toList()) {
-                schema.append(classField.name())
-                        .append(':').append(classField.bindingKind())
-                        .append(':').append(classField.type());
-                appendPersistedTypeSchema(classField.type(), schema, visitingClasses);
-                schema.append(';');
-            }
-            schema.append('}');
-            visitingClasses.remove(classId);
         }
 
         private String singletonCodeDigest(Ast.ModuleDecl module) {
