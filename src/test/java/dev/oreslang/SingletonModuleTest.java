@@ -147,6 +147,33 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void windowsStyleSourcePathAliasesShareSingletonIdentityOnAnyHost() throws Exception {
+        String program = """
+                define singleton module windows_path_counter as
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await windows_path_counter.next());
+                    return;
+                  }
+                end
+                """;
+
+        String first = eval(program, "dir\\..\\windows-path.ores");
+        String second = eval(program, "windows-path.ores");
+
+        assertTrue(first.contains("1"), first);
+        assertTrue(second.contains("2"), second);
+    }
+
+    @Test
     void unrelatedCodeUnitsWithSameModuleNameDoNotAlias() throws Exception {
         String program = """
                 namespace shared_tenant_namespace;

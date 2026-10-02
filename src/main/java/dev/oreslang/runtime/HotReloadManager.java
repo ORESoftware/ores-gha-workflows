@@ -8,6 +8,8 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -53,18 +55,26 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /**
-     * Reuses an incrementally compiled unit. Static compilation work is reused,
-     * while capability admission is deliberately repeated for the destination
-     * isolate because authority belongs to the runtime policy, not the cache.
+     * Loads an incrementally compiled unit across a trust boundary.
+     *
+     * CompiledUnit is externally constructible, so its AST/digest metadata is
+     * advisory only here. Recompute source integrity and repeat syntax, type,
+     * and capability admission against the exact source that will execute.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         requireOpen();
-        CapabilityChecker.check(unit.program(), policy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        java.util.Objects.requireNonNull(unit, "unit");
+        String actualDigest = digest(unit.sourceText());
+        if (!actualDigest.equals(unit.sourceDigest())) {
+            throw new IllegalArgumentException("compiled unit source digest mismatch for " + unit.unitId());
+        }
+        OresCompiler.validateForIsolate(unit.sourceText(), policy);
+        return stage(unit.unitId(), actualDigest, unit.sourceText());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
         requireOpen();
+        codeUnitId = normalizeCodeUnitId(codeUnitId);
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
         Context context = policy.restrictedContextBuilder(
                 executionProfile,
@@ -85,7 +95,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    public synchronized Generation loadAndStart(String name, String sourceText) {
+    public Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
         generation.start();
         return generation;
@@ -100,7 +110,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
-        return activeByCodeUnit.get(codeUnitId);
+        return activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
@@ -162,6 +172,24 @@ public final class HotReloadManager implements AutoCloseable {
         for (Generation generation : live) generation.closeContextOnly();
     }
 
+    private static String normalizeCodeUnitId(String id) {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("hot-reload code unit id cannot be blank");
+        }
+        try {
+            String normalized = Path.of(id.replace('\\', '/'))
+                    .normalize()
+                    .toString()
+                    .replace('\\', '/');
+            if (normalized.isBlank()) {
+                throw new IllegalArgumentException("hot-reload code unit id cannot normalize to an empty path");
+            }
+            return normalized;
+        } catch (InvalidPathException invalid) {
+            throw new IllegalArgumentException("invalid hot-reload code unit id: " + id, invalid);
+        }
+    }
+
     private static String digest(String text) {
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
@@ -202,7 +230,6 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
-        public Context context() { return context; }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean started() { return started.get(); }

@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -88,7 +91,7 @@ final class IsolationHotReloadTest {
 
             assertNotEquals(first.id(), second.id());
             assertNotEquals(first.sha256(), second.sha256());
-            assertNotSame(first.context(), second.context());
+            assertNotSame(first.source(), second.source());
             assertEquals(second.id(), hot.active().id());
             assertEquals(2, hot.liveGenerations());
 
@@ -391,6 +394,121 @@ final class IsolationHotReloadTest {
                     """).id();
             assertTrue(secondId > firstId,
                     "hot-reload generation IDs must stay process-monotonic across manager restarts");
+        }
+    }
+
+    @Test
+    void generationDoesNotExposeRawGraalContext() {
+        assertThrows(NoSuchMethodException.class,
+                () -> HotReloadManager.Generation.class.getMethod("context"));
+    }
+
+    @Test
+    void forgedCompiledUnitCannotValidateOneProgramAndExecuteDifferentSource() {
+        IsolatePolicy hotLoadOnly = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.HOT_CODE_LOAD,
+                        IsolatePolicy.Capability.STDOUT),
+                64L * 1024 * 1024,
+                32,
+                Duration.ofSeconds(2));
+
+        String maliciousSource = """
+                pub routine main() => void {
+                  stdio.stdout.write(process.context_id);
+                }
+                """;
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IncrementalCompiler.CompiledUnit malicious =
+                compiler.compile(Map.of("forged.ores", maliciousSource))
+                        .units()
+                        .get("forged.ores");
+
+        var benignProgram = OresCompiler.parseAndTypeCheck("""
+                pub routine main() => void { return; }
+                """);
+
+        var forged = new IncrementalCompiler.CompiledUnit(
+                malicious.unitId(),
+                malicious.packageId(),
+                malicious.namespace(),
+                malicious.sourceDigest(),
+                malicious.abiDigest(),
+                malicious.dependencies(),
+                malicious.sourceText(),
+                benignProgram);
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(hotLoadOnly, ExecutionProfile.serverJit())) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> hot.load(forged));
+            assertTrue(denied.getMessage().contains("PROCESS_INFO"), denied.getMessage());
+            assertEquals(0, hot.liveGenerations());
+            assertNull(hot.active());
+        }
+    }
+
+    @Test
+    void compiledUnitDigestMismatchIsRejectedBeforeStaging() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IncrementalCompiler.CompiledUnit valid =
+                compiler.compile(Map.of(
+                                "digest.ores",
+                                "pub routine main() => void { return; }"))
+                        .units()
+                        .get("digest.ores");
+
+        var forged = new IncrementalCompiler.CompiledUnit(
+                valid.unitId(),
+                valid.packageId(),
+                valid.namespace(),
+                "0".repeat(64),
+                valid.abiDigest(),
+                valid.dependencies(),
+                valid.sourceText(),
+                valid.program());
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            IllegalArgumentException mismatch = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.load(forged));
+            assertTrue(mismatch.getMessage().contains("digest mismatch"), mismatch.getMessage());
+            assertEquals(0, hot.liveGenerations());
+        }
+    }
+
+    @Test
+    void hotReloadCanonicalizesEquivalentCodeUnitPaths() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var first = hot.load("dir\\..\\same-unit.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            var second = hot.load("same-unit.ores", """
+                    pub routine main() => void {
+                      val version = 2;
+                      return;
+                    }
+                    """);
+
+            assertEquals("same-unit.ores", first.codeUnitId());
+            assertEquals(first.codeUnitId(), second.codeUnitId());
+            assertEquals(second.id(), hot.active("same-unit.ores").id());
+            assertEquals(second.id(), hot.active("dir\\..\\same-unit.ores").id());
+            assertEquals(1, hot.activeGenerations().size());
+        }
+    }
+
+    @Test
+    void hotReloadRejectsBlankOrCollapsedCodeUnitIdentity() {
+        try (HotReloadManager hot =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> hot.load("   ", "pub routine main() => void { return; }"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> hot.load("a/..", "pub routine main() => void { return; }"));
+            assertEquals(0, hot.liveGenerations());
         }
     }
 

@@ -72,7 +72,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
     private static String normalizePathIdentity(String path) {
         try {
-            return Path.of(path)
+            return Path.of(path.replace('\\', '/'))
                     .toAbsolutePath()
                     .normalize()
                     .toString()
