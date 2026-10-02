@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -1481,6 +1482,172 @@ final class SingletonModuleTest {
                 (state, ignored) -> state.get()).toCompletableFuture().join();
         assertEquals(0L, ((Number) value).longValue(),
                 "cancelled running request committed state after cancellation");
+    }
+
+    @Test
+    void singletonMailboxPreservesFifoOrderForAlreadyQueuedRequests() throws Exception {
+        String key = "fifo:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<Object> handle =
+                ProcessSingletonRegistry.getOrCreate(key, Object::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Object> blocker = handle.call(
+                List.of(), 16, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(1, TimeUnit.SECONDS);
+                    return "released";
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+        List<Integer> order = Collections.synchronizedList(new ArrayList<>());
+        List<CompletableFuture<Object>> queued = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            int expected = i;
+            queued.add(handle.call(
+                    List.of(), 16, Duration.ofSeconds(2),
+                    (state, ignored) -> {
+                        order.add(expected);
+                        return expected;
+                    }).toCompletableFuture());
+        }
+
+        release.countDown();
+        assertEquals("released", blocker.join());
+        CompletableFuture.allOf(queued.toArray(CompletableFuture[]::new)).join();
+
+        assertEquals(List.of(0, 1, 2, 3, 4, 5, 6, 7), order);
+    }
+
+    @Test
+    void nestedTimeoutRemovesWaitGraphEdgeBeforeReverseCall() throws Exception {
+        String aKey = "wait-cleanup-a:" + UUID.randomUUID();
+        String bKey = "wait-cleanup-b:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+
+        CountDownLatch bEntered = new CountDownLatch(1);
+        CountDownLatch releaseB = new CountDownLatch(1);
+        CompletableFuture<Object> bBlocker = b.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    bEntered.countDown();
+                    releaseB.await(1, TimeUnit.SECONDS);
+                    return "done";
+                }).toCompletableFuture();
+        assertTrue(bEntered.await(1, TimeUnit.SECONDS));
+
+        CompletableFuture<Object> aCall = a.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> b.call(
+                        List.of(), 8, Duration.ofMillis(40),
+                        (nested, args) -> "too late")
+                        .toCompletableFuture()
+                        .join())
+                .toCompletableFuture();
+
+        RuntimeException timeout = assertThrows(RuntimeException.class, aCall::join);
+        assertTrue(causeChainContains(timeout, "expired in mailbox"), String.valueOf(timeout));
+
+        releaseB.countDown();
+        assertEquals("done", bBlocker.join());
+
+        Object reverse = b.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> a.call(
+                        List.of(), 8, Duration.ofSeconds(1),
+                        (nested, args) -> "reverse-ok")
+                        .toCompletableFuture()
+                        .join())
+                .toCompletableFuture()
+                .join();
+
+        assertEquals("reverse-ok", reverse);
+    }
+
+    @Test
+    void reentrantRegistryCallFailsFastButCellRemainsUsable() {
+        String key = "reentrant:" + UUID.randomUUID();
+        AtomicReference<ProcessSingletonRegistry.Handle<Object>> ref = new AtomicReference<>();
+        ref.set(ProcessSingletonRegistry.getOrCreate(key, Object::new));
+
+        CompletableFuture<Object> call = ref.get().call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> ref.get().call(
+                        List.of(), 8, Duration.ofSeconds(1),
+                        (sameState, args) -> "unreachable")
+                        .toCompletableFuture()
+                        .join())
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "reentrant singleton mailbox call"), String.valueOf(failure));
+
+        assertEquals("still-alive", ref.get().call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "still-alive").toCompletableFuture().join());
+    }
+
+    @Test
+    void concurrentGetOrCreateConvergesOnOneInitialization() {
+        String key = "concurrent-init:" + UUID.randomUUID();
+        AtomicInteger initializations = new AtomicInteger();
+
+        List<CompletableFuture<ProcessSingletonRegistry.Handle<AtomicInteger>>> lookups = new ArrayList<>();
+        for (int i = 0; i < 32; i++) {
+            lookups.add(CompletableFuture.supplyAsync(() ->
+                    ProcessSingletonRegistry.getOrCreate(key, () -> {
+                        initializations.incrementAndGet();
+                        return new AtomicInteger();
+                    })));
+        }
+
+        CompletableFuture.allOf(lookups.toArray(CompletableFuture[]::new)).join();
+        List<ProcessSingletonRegistry.Handle<AtomicInteger>> handles =
+                lookups.stream().map(CompletableFuture::join).toList();
+
+        UUID instance = handles.getFirst().instanceId();
+        assertTrue(handles.stream().allMatch(handle -> handle.instanceId().equals(instance)));
+
+        Object value = handles.getFirst().call(
+                List.of(),
+                (state, ignored) -> state.incrementAndGet())
+                .toCompletableFuture()
+                .join();
+
+        assertEquals(1L, ((Number) value).longValue());
+        assertEquals(1, initializations.get());
+    }
+
+    @Test
+    void virtualMachineFatalInitializationIsNeverRetried() {
+        String key = "fatal-init:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> fatal =
+                ProcessSingletonRegistry.getOrCreate(key, () -> {
+                    throw new StackOverflowError("synthetic fatal init");
+                });
+
+        RuntimeException firstFailure = assertThrows(RuntimeException.class,
+                () -> fatal.call(List.of(), (state, ignored) -> "unreachable")
+                        .toCompletableFuture().join());
+        assertTrue(firstFailure.getCause() instanceof StackOverflowError
+                || firstFailure instanceof CompletionException);
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> attemptedRecovery =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        assertEquals(fatal.instanceId(), attemptedRecovery.instanceId());
+        assertThrows(RuntimeException.class,
+                () -> attemptedRecovery.call(
+                        List.of(),
+                        (state, ignored) -> state.incrementAndGet())
+                        .toCompletableFuture().join());
     }
 
     @Test

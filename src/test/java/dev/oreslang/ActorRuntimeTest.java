@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -111,6 +112,82 @@ final class ActorRuntimeTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.freeze(nested));
         assertTrue(error.getMessage().contains("nesting depth"));
+    }
+
+    @Test
+    void freezePreservesDistinctNullValuedMapEntries() {
+        LinkedHashMap<String, Object> source = new LinkedHashMap<>();
+        source.put("first", null);
+        source.put("second", null);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> frozen = (Map<String, Object>) ActorRuntime.freeze(source);
+
+        assertEquals(2, frozen.size());
+        assertTrue(frozen.containsKey("first"));
+        assertTrue(frozen.containsKey("second"));
+        assertNull(frozen.get("first"));
+        assertNull(frozen.get("second"));
+        assertThrows(UnsupportedOperationException.class, () -> frozen.put("third", null));
+    }
+
+    @Test
+    void freezeEnforcesApproximateByteBudgetEvenForSingleScalars() {
+        String oversized = "x".repeat((8 * 1024 * 1024) + 1);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(oversized));
+
+        assertTrue(error.getMessage().contains("maximum frozen size"));
+    }
+
+    @Test
+    void publicMaterializationValidatesBeforeProducingOwnedMutableCopies() {
+        ArrayList<Object> cyclic = new ArrayList<>();
+        cyclic.add(cyclic);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.materializeOwned(cyclic));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.materializeOwned(new StringBuilder("host mutable")));
+
+        ArrayList<Integer> original = new ArrayList<>(List.of(1, 2));
+        @SuppressWarnings("unchecked")
+        List<Integer> owned = (List<Integer>) ActorRuntime.materializeOwned(original);
+        original.add(3);
+        owned.add(9);
+
+        assertEquals(List.of(1, 2, 3), original);
+        assertEquals(List.of(1, 2, 9), owned);
+    }
+
+    @Test
+    void actorFactoryFailureRemovesDeadCellFromRuntime() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch attempted = new CountDownLatch(1);
+            var ref = runtime.<String>spawn(() -> {
+                attempted.countDown();
+                throw new IllegalStateException("factory failed");
+            });
+
+            assertTrue(attempted.await(1, TimeUnit.SECONDS));
+            assertEventuallyUnknownActor(ref);
+        }
+    }
+
+    @Test
+    void actorBehaviorFailureRemovesDeadCellAndRejectsLaterMessages() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                entered.countDown();
+                throw new IllegalStateException("boom");
+            });
+
+            ref.send("crash");
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+            assertEventuallyUnknownActor(ref);
+        }
     }
 
     @Test
@@ -264,4 +341,18 @@ final class ActorRuntimeTest {
             assertNotNull(shared.value());
         }
     }
+    private static void assertEventuallyUnknownActor(ActorRuntime.ActorRef<String> ref) throws Exception {
+        IllegalStateException last = null;
+        for (int i = 0; i < 100; i++) {
+            try {
+                ref.send("probe");
+            } catch (IllegalStateException failure) {
+                if (failure.getMessage().contains("unknown actor")) return;
+                last = failure;
+            }
+            Thread.sleep(10);
+        }
+        fail("actor cell remained addressable after failure" + (last == null ? "" : ": " + last.getMessage()));
+    }
+
 }

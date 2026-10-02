@@ -31,6 +31,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy policy;
     private final ExecutionProfile executionProfile;
     private final AtomicReference<Generation> active = new AtomicReference<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
@@ -46,6 +47,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Validates and stages a new generation without executing its entrypoint.
      */
     public synchronized Generation load(String name, String sourceText) {
+        requireOpen();
         OresCompiler.validateForIsolate(sourceText, policy);
         return stage(name, digest(sourceText), sourceText);
     }
@@ -56,11 +58,13 @@ public final class HotReloadManager implements AutoCloseable {
      * isolate because authority belongs to the runtime policy, not the cache.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        requireOpen();
         CapabilityChecker.check(unit.program(), policy);
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+        requireOpen();
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
         Context context = policy.restrictedContextBuilder(
                 executionProfile,
@@ -85,6 +89,10 @@ public final class HotReloadManager implements AutoCloseable {
         Generation generation = load(name, sourceText);
         generation.start();
         return generation;
+    }
+
+    private void requireOpen() {
+        if (closed.get()) throw new IllegalStateException("hot reload manager is closed");
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
@@ -146,6 +154,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        if (!closed.compareAndSet(false, true)) return;
         Generation[] live = generations.values().toArray(Generation[]::new);
         generations.clear();
         activeByCodeUnit.clear();

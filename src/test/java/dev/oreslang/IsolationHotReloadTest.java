@@ -198,6 +198,46 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void closedHotReloadManagerCannotBeResurrected() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit());
+
+        var generation = hot.load("close-manager.ores", """
+                pub routine main() => void { return; }
+                """);
+        hot.close();
+
+        assertTrue(generation.closed());
+        assertEquals(0, hot.liveGenerations());
+        assertNull(hot.active());
+        assertTrue(hot.activeGenerations().isEmpty());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> hot.load("after-close.ores", """
+                        pub routine main() => void { return; }
+                        """));
+        assertTrue(error.getMessage().contains("closed"));
+
+        assertDoesNotThrow(hot::close);
+    }
+
+    @Test
+    void retiredGenerationCannotBeStartedAgain() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.load("retired.ores", """
+                    pub routine main() => void { return; }
+                    """);
+
+            hot.retire(generation.id());
+
+            assertTrue(generation.closed());
+            assertThrows(IllegalStateException.class, generation::start);
+            assertNull(hot.active("retired.ores"));
+        }
+    }
+
+    @Test
     void reservedOresPolicyArgumentsCannotBeOverriddenByExtraMetadata() {
         IsolatePolicy policy = IsolatePolicy.developer();
 
