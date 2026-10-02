@@ -306,6 +306,52 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void actorMailboxBackpressureRejectsBeyondConfiguredCapacity() throws Exception {
+        IsolatePolicy tinyMailbox = new IsolatePolicy(
+                Set.of(),
+                32L * 1024 * 1024,
+                1,
+                Duration.ofSeconds(1));
+
+        try (ActorRuntime runtime = new ActorRuntime(tinyMailbox)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+
+            var ref = runtime.<String>spawn(tinyMailbox, () -> (message, context) -> {
+                entered.countDown();
+                release.await(1, TimeUnit.SECONDS);
+            });
+
+            ref.send("active");
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+            ref.send("queued");
+
+            IllegalStateException full = assertThrows(IllegalStateException.class,
+                    () -> ref.send("overflow"));
+            assertTrue(full.getMessage().contains("mailbox limit"));
+
+            release.countDown();
+        }
+    }
+
+    @Test
+    void noneCannotHidePayloadAndFrozenSharedStaysReadonlyAfterMaterialization() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new OresValues.OptionValue(false, "hidden"));
+
+        ActorRuntime.Shared<List<Integer>> shared =
+                new ActorRuntime.Shared<>(new ArrayList<>(List.of(1, 2)));
+
+        @SuppressWarnings("unchecked")
+        ActorRuntime.Shared<List<Integer>> owned =
+                (ActorRuntime.Shared<List<Integer>>) ActorRuntime.materializeOwned(shared);
+
+        assertEquals(List.of(1, 2), owned.value());
+        assertThrows(UnsupportedOperationException.class,
+                () -> owned.value().add(3));
+    }
+
+    @Test
     void actorCarriesItsOwnStricterPolicy() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
