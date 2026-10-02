@@ -216,7 +216,9 @@ public final class ProcessSingletonRegistry {
             Throwable terminal = cell.terminalFailure;
             if (terminal != null) return CompletableFuture.failedFuture(terminal);
 
+            checkExecutionBudget();
             Object frozenGraph = ActorRuntime.freeze(arguments);
+            checkExecutionBudget();
             if (!(frozenGraph instanceof List<?> frozenList)) {
                 throw new IllegalStateException("singleton argument transport did not freeze to a list");
             }
@@ -497,6 +499,7 @@ public final class ProcessSingletonRegistry {
                     @SuppressWarnings("unchecked")
                     List<Object> ownedArguments =
                             (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
+                    checkExecutionBudget();
                     Object result = request.operation.apply(state, ownedArguments);
                     checkExecutionBudget();
                     if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));

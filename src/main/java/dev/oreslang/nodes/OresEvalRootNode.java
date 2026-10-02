@@ -262,7 +262,7 @@ public final class OresEvalRootNode extends RootNode {
             return handle.call(
                     args,
                     context.isolatePolicy().maxMailboxMessages(),
-                    context.isolatePolicy().maxWallTime(),
+                    context.actors().remainingCurrentActorWallTime(context.isolatePolicy().maxWallTime()),
                     (state, frozenArgs) -> transactionalSingletonCall(
                             state,
                             working -> callSingletonFunction(working, fn, frozenArgs)));
@@ -885,7 +885,7 @@ public final class OresEvalRootNode extends RootNode {
             return handle.call(
                     args,
                     context.isolatePolicy().maxMailboxMessages(),
-                    context.isolatePolicy().maxWallTime(),
+                    context.actors().remainingCurrentActorWallTime(context.isolatePolicy().maxWallTime()),
                     (state, frozenArgs) -> transactionalSingletonCall(state, working -> {
                         String currentSchema = singletonSchema(proxy.module());
                         if (!working.schema.equals(currentSchema)) {

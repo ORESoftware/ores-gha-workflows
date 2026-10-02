@@ -4,6 +4,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresValues;
+import dev.oreslang.runtime.ProcessSingletonRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -53,6 +54,73 @@ final class ActorRuntimeTest {
             assertEquals(2, initializations.get());
             assertEquals(2, lastValue.get(first.id()));
             assertEquals(1, lastValue.get(second.id()));
+        }
+    }
+
+    @Test
+    void failedActorLocalInitializationCanRetryOnTheSameActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger attempts = new AtomicInteger();
+            AtomicReference<Integer> observed = new AtomicReference<>();
+            CountDownLatch delivered = new CountDownLatch(2);
+
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    Integer value = context.runtime().currentActorLocal(
+                            "retry-local",
+                            () -> {
+                                int attempt = attempts.incrementAndGet();
+                                if (attempt == 1) throw new IllegalStateException("first init fails");
+                                return 42;
+                            });
+                    observed.set(value);
+                } catch (IllegalStateException expected) {
+                    assertTrue(expected.getMessage().contains("first init fails"));
+                } finally {
+                    delivered.countDown();
+                }
+            });
+
+            ref.send("first");
+            ref.send("second");
+
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(2, attempts.get());
+            assertEquals(42, observed.get());
+        }
+    }
+
+    @Test
+    void recursiveActorLocalInitializationFailsFastAndDoesNotPoisonActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(2);
+            AtomicReference<String> cycleMessage = new AtomicReference<>();
+            AtomicReference<Integer> recovered = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                if (message.equals("cycle")) {
+                    try {
+                        context.runtime().currentActorLocal(
+                                "cycle-local",
+                                () -> context.runtime().currentActorLocal(
+                                        "cycle-local",
+                                        () -> 1));
+                    } catch (IllegalStateException cycle) {
+                        cycleMessage.set(cycle.getMessage());
+                    }
+                } else {
+                    recovered.set(context.runtime().currentActorLocal("cycle-local", () -> 7));
+                }
+                delivered.countDown();
+            });
+
+            ref.send("cycle");
+            ref.send("recover");
+
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertNotNull(cycleMessage.get());
+            assertTrue(cycleMessage.get().contains("initialization cycle"));
+            assertEquals(7, recovered.get());
         }
     }
 
@@ -250,6 +318,27 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void foreignActorRefCannotBeSmuggledInsideNestedContainersOrShared() {
+        try (ActorRuntime source = new ActorRuntime();
+             ActorRuntime destination = new ActorRuntime()) {
+            var foreign = source.<String>spawn(() -> (message, context) -> { });
+            var receiver = destination.<Object>spawn(() -> (message, context) -> { });
+
+            IllegalArgumentException nested = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(List.of(Map.of("ref", foreign))));
+            assertTrue(nested.getMessage().contains("owning ActorRuntime"));
+
+            ActorRuntime.Shared<Object> wrapped =
+                    new ActorRuntime.Shared<>(List.of(foreign));
+            IllegalArgumentException shared = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(wrapped));
+            assertTrue(shared.getMessage().contains("owning ActorRuntime"));
+        }
+    }
+
+    @Test
     void actorRefsRemainSendableInsideTheirOwningRuntime() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
@@ -391,6 +480,59 @@ final class ActorRuntimeTest {
         assertEquals(List.of(1, 2), owned.value());
         assertThrows(UnsupportedOperationException.class,
                 () -> owned.value().add(3));
+    }
+
+    @Test
+    void actorToSingletonRpcInheritsRemainingMessageDeadline() throws Exception {
+        IsolatePolicy shortPolicy = new IsolatePolicy(
+                Set.of(),
+                32L * 1024 * 1024,
+                8,
+                Duration.ofMillis(90));
+        ProcessSingletonRegistry.Handle<Object> singleton =
+                ProcessSingletonRegistry.getOrCreate(
+                        "actor-deadline:" + java.util.UUID.randomUUID(),
+                        Object::new);
+
+        try (ActorRuntime runtime = new ActorRuntime(shortPolicy)) {
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(shortPolicy, () -> (message, context) -> {
+                try {
+                    Thread.sleep(60);
+                    singleton.call(
+                            List.of(),
+                            8,
+                            context.runtime().remainingCurrentActorWallTime(Duration.ofSeconds(5)),
+                            (state, ignored) -> {
+                                while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                            })
+                            .toCompletableFuture()
+                            .join();
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+
+            ref.send("run");
+
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            assertNotNull(observed.get());
+            Throwable current = observed.get();
+            boolean deadline = false;
+            while (current != null) {
+                if (String.valueOf(current.getMessage()).contains("wall-time budget")
+                        || String.valueOf(current.getMessage()).contains("expired")) {
+                    deadline = true;
+                    break;
+                }
+                current = current.getCause();
+            }
+            assertTrue(deadline, String.valueOf(observed.get()));
+        }
     }
 
     @Test

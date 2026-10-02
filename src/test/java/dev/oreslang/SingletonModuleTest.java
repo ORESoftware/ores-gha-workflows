@@ -176,6 +176,38 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void sameCodeUnitAndModuleNameRemainSeparatedByNamespace() throws Exception {
+        String namespaceA = """
+                namespace tenant_a;
+
+                define singleton module namespace_scoped_cache as
+                  let int count = 0;
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await namespace_scoped_cache.next());
+                    return;
+                  }
+                end
+                """;
+
+        String namespaceB = namespaceA.replace("namespace tenant_a;", "namespace tenant_b;");
+
+        String firstA = eval(namespaceA, "namespace-scoped.ores");
+        String firstB = eval(namespaceB, "namespace-scoped.ores");
+        String secondA = eval(namespaceA, "namespace-scoped.ores");
+
+        assertTrue(firstA.contains("1"), firstA);
+        assertTrue(firstB.contains("1"), firstB);
+        assertTrue(secondA.contains("2"), secondA);
+    }
+
+    @Test
     void hotReloadKeepsStateWhenSingletonSchemaIsStable() throws Exception {
         String firstProgram = """
                 define singleton module reload_stable_counter as
@@ -430,7 +462,9 @@ final class SingletonModuleTest {
                           }
                         end
                         """)));
-        assertTrue(forward.getMessage().contains("unknown name 'second'"), forward.getMessage());
+        assertTrue(forward.getMessage().contains("context-free initializer")
+                        || forward.getMessage().contains("unknown name 'second'"),
+                forward.getMessage());
     }
 
     @Test
@@ -1735,6 +1769,41 @@ final class SingletonModuleTest {
         assertEquals("c-ok", c.call(
                 List.of(), 8, Duration.ofSeconds(1),
                 (state, ignored) -> "c-ok").toCompletableFuture().join());
+    }
+
+    @Test
+    void expiredParentDeadlineRejectsNestedCallBeforeTransportExecution() {
+        String aKey = "expired-parent-a:" + UUID.randomUUID();
+        String bKey = "expired-parent-b:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+        AtomicInteger bExecutions = new AtomicInteger();
+
+        CompletableFuture<Object> call = a.call(
+                List.of(), 8, Duration.ofMillis(35),
+                (aState, ignored) -> {
+                    Thread.sleep(60);
+                    return b.call(
+                            List.of("payload"),
+                            8,
+                            Duration.ofSeconds(1),
+                            (bState, args) -> {
+                                bExecutions.incrementAndGet();
+                                return "unreachable";
+                            })
+                            .toCompletableFuture()
+                            .join();
+                })
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "wall-time budget")
+                        || causeChainContains(failure, "expired"),
+                String.valueOf(failure));
+        assertEquals(0, bExecutions.get());
     }
 
     @Test

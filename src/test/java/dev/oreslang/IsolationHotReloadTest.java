@@ -14,6 +14,9 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -108,6 +111,45 @@ final class IsolationHotReloadTest {
             assertFalse(generation.started());
             assertThrows(RuntimeException.class, generation::start);
             assertTrue(generation.closed());
+        }
+    }
+
+    @Test
+    void generationStartIsExactlyOnceUnderConcurrentCallers() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.load("start-once.ores", """
+                    pub routine main() => void { return; }
+                    """);
+
+            AtomicInteger successes = new AtomicInteger();
+            AtomicInteger alreadyStarted = new AtomicInteger();
+
+            CompletableFuture<Void> first = CompletableFuture.runAsync(() -> {
+                try {
+                    generation.start();
+                    successes.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    if (expected.getMessage().contains("already started")) alreadyStarted.incrementAndGet();
+                    else throw expected;
+                }
+            });
+            CompletableFuture<Void> second = CompletableFuture.runAsync(() -> {
+                try {
+                    generation.start();
+                    successes.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    if (expected.getMessage().contains("already started")) alreadyStarted.incrementAndGet();
+                    else throw expected;
+                }
+            });
+
+            CompletableFuture.allOf(first, second).join();
+
+            assertEquals(1, successes.get());
+            assertEquals(1, alreadyStarted.get());
+            assertTrue(generation.started());
+            assertFalse(generation.closed());
         }
     }
 
