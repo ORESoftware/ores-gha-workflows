@@ -63,6 +63,7 @@ public final class ProcessSingletonRegistry {
 
     private static final ThreadLocal<String> CURRENT_CELL = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DEADLINE_NANOS = new ThreadLocal<>();
+    private static final ThreadLocal<Request> CURRENT_REQUEST = new ThreadLocal<>();
 
     private ProcessSingletonRegistry() { }
 
@@ -141,11 +142,38 @@ public final class ProcessSingletonRegistry {
      * caller's wall-time budget indefinitely.
      */
     public static void checkExecutionBudget() {
+        Request request = CURRENT_REQUEST.get();
+        if (request != null && request.reply.isCancelled()) {
+            throw new ExecutionTerminated("singleton call was cancelled for "
+                    + diagnosticId(CURRENT_CELL.get()));
+        }
+
         Long deadline = CURRENT_DEADLINE_NANOS.get();
         if (deadline == null) return;
         if (System.nanoTime() - deadline >= 0) {
             throw new ExecutionTerminated("singleton call wall-time budget exceeded for "
                     + diagnosticId(CURRENT_CELL.get()));
+        }
+    }
+
+    /**
+     * Linearizes a singleton state commit against explicit caller cancellation.
+     * If cancellation wins first, the commit is rejected. If commit wins first,
+     * a later cancellation cannot retroactively roll back already-published
+     * state.
+     */
+    public static void commitIfActive(Runnable commit) {
+        Objects.requireNonNull(commit, "commit");
+        Request request = CURRENT_REQUEST.get();
+        if (request == null) {
+            checkExecutionBudget();
+            commit.run();
+            return;
+        }
+
+        synchronized (request.reply.commitLock()) {
+            checkExecutionBudget();
+            commit.run();
         }
     }
 
@@ -203,7 +231,7 @@ public final class ProcessSingletonRegistry {
                 return CompletableFuture.failedFuture(failure);
             }
 
-            CompletableFuture<Object> reply = new CompletableFuture<>();
+            ReplyFuture reply = new ReplyFuture();
             if (waitEdge != null) reply.whenComplete((ignored, failure) -> waitEdge.close());
 
             long deadline = effectiveDeadline(callerWallTime);
@@ -280,6 +308,21 @@ public final class ProcessSingletonRegistry {
         Object apply(Object state, List<Object> arguments) throws Exception;
     }
 
+    private static final class ReplyFuture extends CompletableFuture<Object> {
+        private final Object commitLock = new Object();
+
+        private Object commitLock() {
+            return commitLock;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            synchronized (commitLock) {
+                return super.cancel(mayInterruptIfRunning);
+            }
+        }
+    }
+
     private static final class Request {
         private static final int QUEUED = 0;
         private static final int RUNNING = 1;
@@ -288,7 +331,7 @@ public final class ProcessSingletonRegistry {
 
         private final List<Object> arguments;
         private final ErasedOperation operation;
-        private final CompletableFuture<Object> reply;
+        private final ReplyFuture reply;
         private final long deadlineNanos;
         private final AtomicInteger phase = new AtomicInteger(QUEUED);
         private volatile ScheduledFuture<?> timeoutTask;
@@ -296,7 +339,7 @@ public final class ProcessSingletonRegistry {
         private Request(
                 List<Object> arguments,
                 ErasedOperation operation,
-                CompletableFuture<Object> reply,
+                ReplyFuture reply,
                 long deadlineNanos) {
             this.arguments = arguments;
             this.operation = operation;
@@ -445,8 +488,10 @@ public final class ProcessSingletonRegistry {
 
                 String previousCell = CURRENT_CELL.get();
                 Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
+                Request previousRequest = CURRENT_REQUEST.get();
                 CURRENT_CELL.set(key);
                 CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
+                CURRENT_REQUEST.set(request);
                 try {
                     checkExecutionBudget();
                     @SuppressWarnings("unchecked")
@@ -465,6 +510,7 @@ public final class ProcessSingletonRegistry {
                     request.finish();
                     restoreThreadLocal(CURRENT_CELL, previousCell);
                     restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
+                    restoreThreadLocal(CURRENT_REQUEST, previousRequest);
                 }
             }
         }

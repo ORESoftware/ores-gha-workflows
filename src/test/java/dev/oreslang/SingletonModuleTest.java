@@ -1449,6 +1449,41 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void cancellingRunningSingletonRequestWinsBeforeCommit() throws Exception {
+        String key = "cancel-running:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(1);
+
+        CompletableFuture<Object> running = handle.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    entered.countDown();
+                    try {
+                        release.await(1, TimeUnit.SECONDS);
+                        ProcessSingletonRegistry.commitIfActive(state::incrementAndGet);
+                        return state.get();
+                    } finally {
+                        finished.countDown();
+                    }
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertTrue(running.cancel(false));
+        release.countDown();
+        assertTrue(finished.await(1, TimeUnit.SECONDS));
+
+        Object value = handle.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> state.get()).toCompletableFuture().join();
+        assertEquals(0L, ((Number) value).longValue(),
+                "cancelled running request committed state after cancellation");
+    }
+
+    @Test
     void registryEnforcesCallerBackpressureAndRecoversAfterTimeout() throws Exception {
         String key = "backpressure:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =

@@ -282,9 +282,10 @@ public final class OresEvalRootNode extends RootNode {
             working.validateStorageGraph();
             ProcessSingletonRegistry.checkExecutionBudget();
 
-            // Linearization point: commit performs only in-memory state swaps
-            // after result/state/deadline validation has succeeded.
-            canonical.commitFrom(working);
+            // Linearization point: cancellation and commit share the
+            // registry commit gate. Either the state swap publishes first, or
+            // a caller cancellation wins first and this commit is rejected.
+            ProcessSingletonRegistry.commitIfActive(() -> canonical.commitFrom(working));
             return frozenResult;
         }
 
