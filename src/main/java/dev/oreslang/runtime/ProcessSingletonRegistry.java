@@ -174,6 +174,7 @@ public final class ProcessSingletonRegistry {
         synchronized (request.reply.commitLock()) {
             checkExecutionBudget();
             commit.run();
+            request.reply.markCommitted();
         }
     }
 
@@ -321,14 +322,20 @@ public final class ProcessSingletonRegistry {
 
     private static final class ReplyFuture extends CompletableFuture<Object> {
         private final Object commitLock = new Object();
+        private boolean committed;
 
         private Object commitLock() {
             return commitLock;
         }
 
+        private void markCommitted() {
+            committed = true; // caller holds commitLock
+        }
+
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
             synchronized (commitLock) {
+                if (committed) return false;
                 return super.cancel(mayInterruptIfRunning);
             }
         }

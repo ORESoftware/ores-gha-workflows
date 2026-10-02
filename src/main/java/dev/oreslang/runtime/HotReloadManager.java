@@ -89,8 +89,12 @@ public final class HotReloadManager implements AutoCloseable {
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                context.close(true);
+            } catch (RuntimeException | Error closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
             throw failure;
         }
     }
@@ -169,7 +173,24 @@ public final class HotReloadManager implements AutoCloseable {
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
-        for (Generation generation : live) generation.closeContextOnly();
+
+        RuntimeException runtimeFailure = null;
+        Error errorFailure = null;
+        for (Generation generation : live) {
+            try {
+                generation.closeContextOnly();
+            } catch (RuntimeException failure) {
+                if (runtimeFailure == null && errorFailure == null) runtimeFailure = failure;
+                else if (runtimeFailure != null) runtimeFailure.addSuppressed(failure);
+                else errorFailure.addSuppressed(failure);
+            } catch (Error failure) {
+                if (runtimeFailure == null && errorFailure == null) errorFailure = failure;
+                else if (runtimeFailure != null) runtimeFailure.addSuppressed(failure);
+                else errorFailure.addSuppressed(failure);
+            }
+        }
+        if (runtimeFailure != null) throw runtimeFailure;
+        if (errorFailure != null) throw errorFailure;
     }
 
     private static String normalizeCodeUnitId(String id) {
@@ -241,8 +262,12 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             try {
                 return context.eval(source);
-            } catch (RuntimeException failure) {
-                owner.failedStart(this);
+            } catch (RuntimeException | Error failure) {
+                try {
+                    owner.failedStart(this);
+                } catch (RuntimeException | Error closeFailure) {
+                    failure.addSuppressed(closeFailure);
+                }
                 throw failure;
             }
         }

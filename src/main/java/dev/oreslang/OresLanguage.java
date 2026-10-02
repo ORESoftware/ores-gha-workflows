@@ -59,7 +59,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 throw new IllegalArgumentException("invalid Oreslang source URI identity", invalidPath);
             }
         } else {
-            codeUnitId = source.getName();
+            codeUnitId = normalizeLogicalIdentity(source.getName());
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
         RootCallTarget evaluator = new OresEvalRootNode(
@@ -68,6 +68,20 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 codeUnitId,
                 sourceDigest(text)).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
+    }
+
+    private static String normalizeLogicalIdentity(String name) {
+        if (name == null || name.isBlank()) return name;
+        try {
+            String normalized = Path.of(name.replace('\\', '/'))
+                    .normalize()
+                    .toString()
+                    .replace('\\', '/');
+            return normalized.isBlank() ? name : normalized;
+        } catch (InvalidPathException invalidPath) {
+            // Source names may be logical labels rather than filesystem paths.
+            return name;
+        }
     }
 
     private static String normalizePathIdentity(String path) {

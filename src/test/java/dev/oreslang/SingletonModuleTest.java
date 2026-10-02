@@ -2196,6 +2196,37 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void cancellationAfterCommitIsRejectedAndCommittedReplyCompletes() throws Exception {
+        String key = "commit-wins-cancel:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch committed = new CountDownLatch(1);
+        CountDownLatch releaseReturn = new CountDownLatch(1);
+
+        CompletableFuture<Object> running = handle.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    ProcessSingletonRegistry.commitIfActive(() -> state.incrementAndGet());
+                    committed.countDown();
+                    releaseReturn.await(1, TimeUnit.SECONDS);
+                    return state.get();
+                }).toCompletableFuture();
+
+        assertTrue(committed.await(1, TimeUnit.SECONDS));
+        assertFalse(running.cancel(false),
+                "cancellation must lose once the singleton state commit has linearized");
+
+        releaseReturn.countDown();
+        assertEquals(1L, ((Number) running.join()).longValue());
+
+        Object value = handle.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> state.get()).toCompletableFuture().join();
+        assertEquals(1L, ((Number) value).longValue());
+    }
+
+    @Test
     void registryEnforcesCallerBackpressureAndRecoversAfterTimeout() throws Exception {
         String key = "backpressure:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =
