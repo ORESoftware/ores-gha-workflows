@@ -1020,11 +1020,33 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.ModuleDecl module, Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         validateSingletonTransportExpr(field.initializer(), module.name());
-        Type actual = typeOf(field.initializer(), new Env(null, module.name()), Set.of(), null);
+
+        Env initializerEnv = module.singleton()
+                ? singletonInitializerEnvBefore(module, field)
+                : new Env(null, module.name());
+        Type actual = typeOf(field.initializer(), initializerEnv, Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
         }
+    }
+
+    private Env singletonInitializerEnvBefore(Ast.ModuleDecl module, Ast.FieldDecl target) {
+        Env env = new Env(null, module.name());
+        for (Ast.Decl decl : module.declarations()) {
+            if (!(decl instanceof Ast.FieldDecl field)) continue;
+            if (field == target) break;
+            if (field.initializer() == null) {
+                throw new IllegalArgumentException("singleton module binding '" + module.name() + "."
+                        + field.name() + "' requires an initializer");
+            }
+
+            Type actual = typeOf(field.initializer(), env, Set.of(), null);
+            Type declared = field.type() == null ? actual : resolve(field.type(), Set.of(), null);
+            requireAssignable(actual, declared, "initializer for " + module.name() + "." + field.name());
+            env.define(field.name(), declared, field.bindingKind());
+        }
+        return env;
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {

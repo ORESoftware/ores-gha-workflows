@@ -45,18 +45,21 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         String text = source.getCharacters().toString();
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
-        if (codeUnitId == null || codeUnitId.isBlank()) {
-            codeUnitId = source.getName();
-        } else {
+        if (codeUnitId != null && !codeUnitId.isBlank()) {
+            codeUnitId = normalizePathIdentity(codeUnitId);
+        } else if (source.getURI() != null
+                && "file".equalsIgnoreCase(source.getURI().getScheme())) {
             try {
-                codeUnitId = Path.of(codeUnitId)
+                codeUnitId = Path.of(source.getURI())
                         .toAbsolutePath()
                         .normalize()
                         .toString()
                         .replace('\\', '/');
-            } catch (InvalidPathException invalidPath) {
-                throw new IllegalArgumentException("invalid Oreslang source path identity", invalidPath);
+            } catch (RuntimeException invalidPath) {
+                throw new IllegalArgumentException("invalid Oreslang source URI identity", invalidPath);
             }
+        } else {
+            codeUnitId = source.getName();
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
         RootCallTarget evaluator = new OresEvalRootNode(
@@ -65,6 +68,18 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 codeUnitId,
                 sourceDigest(text)).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
+    }
+
+    private static String normalizePathIdentity(String path) {
+        try {
+            return Path.of(path)
+                    .toAbsolutePath()
+                    .normalize()
+                    .toString()
+                    .replace('\\', '/');
+        } catch (InvalidPathException invalidPath) {
+            throw new IllegalArgumentException("invalid Oreslang source path identity", invalidPath);
+        }
     }
 
     private static String sourceDigest(String source) {
