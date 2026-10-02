@@ -1562,6 +1562,33 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void topLevelSingletonDeadlineIncludesArgumentTransport() {
+        String key = "transport-deadline:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<Object> handle =
+                ProcessSingletonRegistry.getOrCreate(key, Object::new);
+        AtomicInteger executions = new AtomicInteger();
+
+        List<Integer> payload = Collections.nCopies(50_000, 1);
+
+        CompletionStage<Object> call = handle.call(
+                List.of(payload),
+                8,
+                Duration.ofNanos(1),
+                (state, args) -> {
+                    executions.incrementAndGet();
+                    return "unreachable";
+                });
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class,
+                () -> call.toCompletableFuture().join());
+        assertTrue(causeChainContains(failure, "wall-time budget")
+                        || causeChainContains(failure, "expired"),
+                String.valueOf(failure));
+        assertEquals(0, executions.get());
+    }
+
+    @Test
     void singletonRequestSizeLimitAppliesAcrossAllArgumentsTogether() {
         String key = "aggregate-message-limit:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<Object> handle =

@@ -216,9 +216,19 @@ public final class ProcessSingletonRegistry {
             Throwable terminal = cell.terminalFailure;
             if (terminal != null) return CompletableFuture.failedFuture(terminal);
 
+            long deadline = effectiveDeadline(callerWallTime);
+            if (expired(deadline)) {
+                return CompletableFuture.failedFuture(
+                        new TimeoutException("singleton call wall-time budget expired before argument transport"));
+            }
+
             checkExecutionBudget();
             Object frozenGraph = ActorRuntime.freeze(arguments);
             checkExecutionBudget();
+            if (expired(deadline)) {
+                return CompletableFuture.failedFuture(
+                        new TimeoutException("singleton call wall-time budget expired during argument transport"));
+            }
             if (!(frozenGraph instanceof List<?> frozenList)) {
                 throw new IllegalStateException("singleton argument transport did not freeze to a list");
             }
@@ -236,7 +246,6 @@ public final class ProcessSingletonRegistry {
             ReplyFuture reply = new ReplyFuture();
             if (waitEdge != null) reply.whenComplete((ignored, failure) -> waitEdge.close());
 
-            long deadline = effectiveDeadline(callerWallTime);
             if (expired(deadline)) {
                 if (waitEdge != null) waitEdge.close();
                 return CompletableFuture.failedFuture(

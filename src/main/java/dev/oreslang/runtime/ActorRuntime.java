@@ -69,6 +69,36 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Returns the remaining wall-time budget for the currently executing actor
+     * message, capped by {@code fallback}. Off-actor callers simply receive the
+     * fallback. This lets blocking actor RPCs inherit the message deadline
+     * instead of accidentally minting a fresh full policy budget.
+     */
+    public Duration remainingCurrentActorWallTime(Duration fallback) {
+        java.util.Objects.requireNonNull(fallback, "fallback");
+        if (fallback.isZero() || fallback.isNegative()) {
+            throw new IllegalArgumentException("fallback wall time must be positive");
+        }
+
+        ActorExecution execution = CURRENT_ACTOR.get();
+        Long deadline = CURRENT_ACTOR_DEADLINE_NANOS.get();
+        if (execution == null || execution.runtime != this || deadline == null) return fallback;
+
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+            throw new ExecutionTerminated("actor message wall-time budget exceeded");
+        }
+
+        long fallbackNanos;
+        try {
+            fallbackNanos = fallback.toNanos();
+        } catch (ArithmeticException overflow) {
+            fallbackNanos = Long.MAX_VALUE / 4;
+        }
+        return Duration.ofNanos(Math.min(remaining, Math.max(1L, fallbackNanos)));
+    }
+
+    /**
      * Actor-cell-local host storage. Values live exactly as long as the actor
      * cell and are never shared with another actor. Intended for compiler/runtime
      * lowering such as per-actor module/init state, not direct guest access.
