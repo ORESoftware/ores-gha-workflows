@@ -156,6 +156,30 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void repeatedMutableSourceReferencesDoNotCreateReceiverAliases() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<List<?>> observed = new AtomicReference<>();
+
+            var ref = runtime.<List<Object>>spawn(() -> (message, context) -> {
+                observed.set(message);
+                received.countDown();
+            });
+
+            ArrayList<Integer> sharedMutable = new ArrayList<>(List.of(1, 2));
+            ref.send(List.of(sharedMutable, sharedMutable));
+            sharedMutable.add(3);
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(2, observed.get().size());
+            assertEquals(List.of(1, 2), observed.get().get(0));
+            assertEquals(List.of(1, 2), observed.get().get(1));
+            assertNotSame(observed.get().get(0), observed.get().get(1),
+                    "ordinary actor message copying must not preserve mutable source aliases");
+        }
+    }
+
+    @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
     }
