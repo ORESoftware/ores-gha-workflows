@@ -12,6 +12,7 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -109,6 +110,36 @@ final class SingletonModuleTest {
 
         String first = eval(program, "singleton-shared-unit.ores");
         String second = eval(program, "singleton-shared-unit.ores");
+
+        assertTrue(first.contains("1"), first);
+        assertTrue(second.contains("2"), second);
+    }
+
+    @Test
+    void normalizedFilePathAliasesShareOneProcessSingletonIdentity() throws Exception {
+        String program = """
+                define singleton module canonical_path_counter as
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await canonical_path_counter.next());
+                    return;
+                  }
+                end
+                """;
+
+        URI aliased = URI.create("file:///tmp/oreslang-canonical/a/../unit.ores");
+        URI normalized = URI.create("file:///tmp/oreslang-canonical/unit.ores");
+
+        String first = evalWithUri(program, aliased);
+        String second = evalWithUri(program, normalized);
 
         assertTrue(first.contains("1"), first);
         assertTrue(second.contains("2"), second);
@@ -1236,6 +1267,47 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonTransactionalCopyPreservesInternalAggregateAliases() throws Exception {
+        String output = eval("""
+                define singleton module transactional_alias_guard as
+                  let Array<int> primary = arr[1];
+                  let Array<int> alias = primary;
+
+                  pub fnc bump() => int {
+                    primary[0] = primary[0] + 1;
+                    return alias[0];
+                  }
+
+                  pub fnc mutate_then_fail() => int {
+                    primary[0] = 99;
+                    val Array<int> values = arr[1];
+                    return values[99];
+                  }
+
+                  pub fnc read() => int {
+                    return alias[0];
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await transactional_alias_guard.bump());
+                    try {
+                      val int ignored = await transactional_alias_guard.mutate_then_fail();
+                    } catch (err) {
+                    }
+                    stdio.println(await transactional_alias_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-transaction-alias.ores");
+
+        assertTrue(output.contains("2"), output);
+        long twos = output.lines().filter(line -> line.trim().equals("2")).count();
+        assertEquals(2, twos, output);
+    }
+
+    @Test
     void failedSingletonRequestRollsBackAllProcessStateMutation() throws Exception {
         String output = eval("""
                 define singleton module transactional_failure_guard as
@@ -1304,6 +1376,76 @@ final class SingletonModuleTest {
                   }
                 end
                 """, "singleton-transaction-timeout.ores", shortBudget);
+
+        assertTrue(output.contains("0"), output);
+    }
+
+    @Test
+    void oversizedSingletonStateMutationIsRejectedWithoutCommit() throws Exception {
+        String output = eval("""
+                define singleton module oversized_state_guard as
+                  let String data = "small";
+
+                  pub routine grow_too_large() => void {
+                    let String payload = "x";
+                    for (let i = 0; i < 23; i = i + 1) {
+                      payload = payload + payload;
+                    }
+                    data = payload;
+                    return;
+                  }
+
+                  pub fnc read() => String {
+                    return data;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      await oversized_state_guard.grow_too_large();
+                    } catch (err) {
+                    }
+                    stdio.println(await oversized_state_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-oversized-state.ores");
+
+        assertTrue(output.contains("small"), output);
+    }
+
+    @Test
+    void oversizedSingletonResultCannotCommitState() throws Exception {
+        String output = eval("""
+                define singleton module oversized_result_guard as
+                  let int count = 0;
+
+                  pub fnc mutate_then_return_oversize() => String {
+                    count = count + 1;
+                    let String payload = "x";
+                    for (let i = 0; i < 23; i = i + 1) {
+                      payload = payload + payload;
+                    }
+                    return payload;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      val String ignored = await oversized_result_guard.mutate_then_return_oversize();
+                    } catch (err) {
+                    }
+                    stdio.println(await oversized_result_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-oversized-result.ores");
 
         assertTrue(output.contains("0"), output);
     }
@@ -2012,6 +2154,22 @@ final class SingletonModuleTest {
                 .build();
 
         try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private String evalWithUri(String program, URI uri) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, uri.getPath())
+                .uri(uri)
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
                 .out(output)
                 .build()) {
             context.eval(source);
