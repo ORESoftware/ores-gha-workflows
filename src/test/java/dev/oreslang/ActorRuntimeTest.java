@@ -125,6 +125,16 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void spawnRejectsNullPolicyAndFactorySynchronously() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(NullPointerException.class,
+                    () -> runtime.<String>spawn(null, () -> (message, context) -> { }));
+            assertThrows(NullPointerException.class,
+                    () -> runtime.<String>spawn(IsolatePolicy.developer(), null));
+        }
+    }
+
+    @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);

@@ -175,6 +175,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        java.util.Objects.requireNonNull(policy, "policy");
+        java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         requireWithinCeiling(policy);
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id);
@@ -518,7 +520,7 @@ public final class ActorRuntime implements AutoCloseable {
         private static final Object STOP = new Object();
         private final ActorRef<M> ref;
         private final IsolatePolicy policy;
-        private final Supplier<? extends Behavior<M>> behaviorFactory;
+        private Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
         private volatile Thread thread;
 
@@ -542,8 +544,11 @@ public final class ActorRuntime implements AutoCloseable {
                     new HashMap<>(),
                     new LinkedHashSet<>()));
             try {
+                Supplier<? extends Behavior<M>> factory = behaviorFactory;
+                behaviorFactory = null; // do not retain the lowering/evaluator closure for the actor lifetime
                 final Behavior<M> behavior = java.util.Objects.requireNonNull(
-                        behaviorFactory.get(), "actor behavior factory returned null");
+                        java.util.Objects.requireNonNull(factory, "actor behavior factory").get(),
+                        "actor behavior factory returned null");
                 final ActorContext<M> context = new ActorContext<>() {
                     @Override public ActorRef<M> self() { return ref; }
                     @Override public ActorRuntime runtime() { return ActorRuntime.this; }
