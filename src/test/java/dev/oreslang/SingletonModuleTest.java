@@ -406,6 +406,34 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonInitializersMayReferenceEarlierFieldsButNotLaterFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define singleton module ordered_initializer_ok as
+                  let Array<int> first = arr[1];
+                  let Array<int> second = first;
+
+                  pub fnc read() => int {
+                    return second[0];
+                  }
+                end
+                """)));
+
+        IllegalArgumentException forward = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module ordered_initializer_bad as
+                          let Array<int> first = second;
+                          let Array<int> second = arr[1];
+
+                          pub fnc read() => int {
+                            return first[0];
+                          }
+                        end
+                        """)));
+        assertTrue(forward.getMessage().contains("unknown name 'second'"), forward.getMessage());
+    }
+
+    @Test
     void singletonInitializersAreContextFreeAndStateTypesAreStable() {
         IllegalArgumentException capabilityInitializer = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -1663,6 +1691,50 @@ final class SingletonModuleTest {
 
         RuntimeException failure = assertThrows(RuntimeException.class, call::join);
         assertTrue(causeChainContains(failure, "wait cycle"), String.valueOf(failure));
+    }
+
+    @Test
+    void registryRejectsThreeSingletonWaitCycleBeforeDeadlock() {
+        String aKey = "cycle3-a:" + UUID.randomUUID();
+        String bKey = "cycle3-b:" + UUID.randomUUID();
+        String cKey = "cycle3-c:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> c =
+                ProcessSingletonRegistry.getOrCreate(cKey, Object::new);
+
+        CompletableFuture<Object> call = a.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (aState, ignored) -> b.call(
+                        List.of(), 8, Duration.ofSeconds(2),
+                        (bState, ignoredB) -> c.call(
+                                List.of(), 8, Duration.ofSeconds(2),
+                                (cState, ignoredC) -> a.call(
+                                        List.of(), 8, Duration.ofSeconds(2),
+                                        (nestedA, finalArgs) -> "unreachable")
+                                        .toCompletableFuture()
+                                        .join())
+                                .toCompletableFuture()
+                                .join())
+                        .toCompletableFuture()
+                        .join())
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "wait cycle"), String.valueOf(failure));
+
+        assertEquals("a-ok", a.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "a-ok").toCompletableFuture().join());
+        assertEquals("b-ok", b.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "b-ok").toCompletableFuture().join());
+        assertEquals("c-ok", c.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "c-ok").toCompletableFuture().join());
     }
 
     @Test

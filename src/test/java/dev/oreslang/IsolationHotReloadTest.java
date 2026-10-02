@@ -313,6 +313,46 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void codeGenerationMetadataRejectsDuplicatesAndNegativeValues() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(
+                        ExecutionProfile.serverJit(),
+                        "--ores-code-generation=41",
+                        "--ores-code-generation=42"));
+        assertTrue(duplicate.getMessage().contains("duplicate"));
+
+        IllegalArgumentException negative = assertThrows(
+                IllegalArgumentException.class,
+                () -> policy.restrictedContextBuilder(
+                        ExecutionProfile.serverJit(),
+                        "--ores-code-generation=-1"));
+        assertTrue(negative.getMessage().contains("cannot be negative"));
+    }
+
+    @Test
+    void processGenerationIdsRemainMonotonicAcrossManagerLifetimes() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+
+        long firstId;
+        try (HotReloadManager first = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            firstId = first.load("generation-a.ores", """
+                    pub routine main() => void { return; }
+                    """).id();
+        }
+
+        try (HotReloadManager second = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            long secondId = second.load("generation-b.ores", """
+                    pub routine main() => void { return; }
+                    """).id();
+            assertTrue(secondId > firstId,
+                    "hot-reload generation IDs must stay process-monotonic across manager restarts");
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
