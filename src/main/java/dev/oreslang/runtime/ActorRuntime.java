@@ -2306,14 +2306,24 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorSpawn<M, R> {
         private final ActorRef<M> ref;
         private final OresFuture<R> result;
+        private final OresFuture<Boolean> done;
 
         private ActorSpawn(ActorRef<M> ref, OresFuture<R> result) {
             this.ref = Objects.requireNonNull(ref);
             this.result = Objects.requireNonNull(result);
+            this.done = new OresFuture<>(() -> result.cancel(true));
+            result.whenComplete((value, failure) -> {
+                if (failure == null) {
+                    done.completeFromRuntime(Boolean.TRUE);
+                } else {
+                    done.failFromRuntime(OresFuture.unwrap(failure));
+                }
+            });
         }
 
         public ActorId id() { return ref.id(); }
         public OresFuture<ActorRef<M>> ready() { return ref.readiness(); }
+        public OresFuture<Boolean> done() { return done; }
         public OresFuture<R> result() { return result; }
     }
 
