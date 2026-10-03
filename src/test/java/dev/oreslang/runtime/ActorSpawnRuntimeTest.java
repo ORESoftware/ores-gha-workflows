@@ -57,6 +57,27 @@ final class ActorSpawnRuntimeTest {
     }
 
     @Test
+    void doneTracksCompletionIndependentlyOfReady() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch release = new CountDownLatch(1);
+            ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    "ok",
+                    (message, context) -> {
+                        assertTrue(release.await(2, TimeUnit.SECONDS));
+                        return message;
+                    });
+
+            assertEquals(spawn.id(), spawn.ready().get(2, TimeUnit.SECONDS).id());
+            assertFalse(spawn.done().isDone());
+
+            release.countDown();
+            assertTrue(spawn.done().get(2, TimeUnit.SECONDS));
+            assertEquals("ok", spawn.result().get(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void readinessFutureYieldsTheSameActorIdentity() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
