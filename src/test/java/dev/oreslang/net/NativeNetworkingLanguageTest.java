@@ -74,13 +74,10 @@ final class NativeNetworkingLanguageTest {
                     val output = socket.getOutputStream();
                     output.writeString("ping");
                     val input = socket.getInputStream();
-                    val bytes = arr[0, 0, 0, 0];
-                    val count = input.read(bytes);
-                    stdio.println(count);
-                    stdio.println(bytes[0]);
-                    stdio.println(bytes[1]);
-                    stdio.println(bytes[2]);
-                    stdio.println(bytes[3]);
+                    stdio.println(input.read());
+                    stdio.println(input.read());
+                    stdio.println(input.read());
+                    stdio.println(input.read());
                     socket.close();
                     return;
                   }
