@@ -478,18 +478,23 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
-    void nativeNetRejectsOutOfBoundsGuestBufferRangesBeforeJni() throws Exception {
+    void nativeNetRejectsNumericFdAtCompileTime() {
         String program = """
                 define module app
                   pub fnc main() => void {
                     val bytes = [0, 0, 0, 0];
-                    native_net.read(0, bytes, 3, 2);
+                    native_net.read(0, bytes, 3, 1);
                     return;
                   }
                 end
                 """;
-        Exception error = assertThrows(Exception.class, () -> evaluateWithNetwork(program));
-        assertTrue(error.toString().contains("byte range is out of bounds"));
+        Exception error = assertThrows(
+                Exception.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(
+                error.toString().contains("NativeSocketHandle")
+                        || error.toString().contains("Borrow"),
+                error::toString);
     }
 
     @Test
