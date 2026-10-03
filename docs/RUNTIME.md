@@ -6,7 +6,7 @@
 2. The supervisor/launcher supplies an `IsolatePolicy`.
 3. Compiler admission rejects language APIs not in that policy.
 4. Runtime API facades repeat the authorization check.
-5. Graal host access, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
+5. Graal host access/class lookup, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
 6. Actors cannot exceed their configured mailbox capacity.
 7. Hot reload never requires loading executable native libraries.
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
@@ -36,6 +36,25 @@ iOS is treated as AOT-only by the execution-profile validator. Android may use A
 Native Image is fundamentally closed-world for Java classes. Oreslang therefore does not make hot reload depend on dynamically linking new Java/native code. The runtime/interpreter is part of the shipped artifact; newly downloaded Oreslang source (and later a stable serialized Ores IR) is treated as untrusted data, validated, then executed in a new generation.
 
 That makes the mechanism consistent across Windows, macOS, Linux, Android, and AOT-only targets. Platform-specific native dynamic linking can remain an optional trusted-host optimization, never a semantic dependency.
+
+## Java host interop boundary
+
+Java imports are a two-key boundary. Source may name an explicit `java:` class, but execution requires both:
+
+1. the Oreslang `JAVA_INTEROP` capability; and
+2. an exact fully-qualified host-class allowlist entry supplied by the launcher/embedder.
+
+The runtime uses Graal host lookup rather than guest-side `Class.forName`, disables host class loading, exposes only public **declared** members of explicitly allowlisted classes, and disables access inheritance. This prevents admitting one class from automatically exposing inherited reflection such as `Object.getClass()`.
+
+Private/memory-isolated actors have `JAVA_INTEROP` stripped from their effective policy. Java host objects are wrapped as host capabilities, are not ordinary Oreslang data, and are rejected from synchronized shared-state publication. Adversarial isolates cannot grant `JAVA_INTEROP` at all.
+
+Class-level interop blocks VM-control/reflection infrastructure (for example `Runtime`, `System`, `Class`, class loaders, reflection/invoke, script/compiler APIs, and JDK internals). Broad JDK families additionally require their corresponding Ores capabilities: filesystem, network, thread creation, native access, or process info. Third-party classes remain the embedder's responsibility: allowlisting one explicitly grants access to its public declared host surface.
+
+Example:
+
+```text
+oreslang-compiler --allow=JAVA_INTEROP --allow-host-class=java.util.ArrayList app.ores
+```
 
 ## Capability ownership
 

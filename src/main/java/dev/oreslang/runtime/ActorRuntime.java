@@ -1054,7 +1054,8 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
-                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                        IsolatePolicy.Capability.JAVA_INTEROP)
                 : policy;
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {

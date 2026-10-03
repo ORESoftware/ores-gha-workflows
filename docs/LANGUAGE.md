@@ -26,13 +26,23 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
 import module foo from "../xyz";
+import module foo as apiFoo from "../xyz";
 import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import class Widget as ApiWidget from "../xyz";
+import fnc add as apiAdd from "../xyz";
+import fnc * as funcs from "../xyz";
+import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+
+Java host classes use an explicit `java:` URI and the same alias syntax:
+
+```ores
+import class ArrayList as JArrayList from "java:java.util.ArrayList";
+```
+
+The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
 ### Circular imports and file initialization
 
@@ -222,6 +232,26 @@ Structural inline object:
 val user = obj{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
+
+Static object/map keys may be identifiers, reserved member keys such as
+`stop`/`do`/`done`, or strings written with either single or double
+quotes. Backticks make the key dynamic: the expression between the backticks
+must evaluate to a string.
+
+```ores
+val key = "score";
+val stats = obj{
+  stop: 1,
+  'do': 2,
+  "done": 3,
+  `key`: 4
+};
+```
+
+An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
+`T` is the joined value type. A `DynamicStruct<T>` can also be created
+directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
+only values assignable to `T`.
 
 Inline array:
 

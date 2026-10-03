@@ -6,7 +6,9 @@ import dev.oreslang.runtime.LinkedProgramRunner;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -24,6 +26,7 @@ public final class OresMain {
         String mode = "jit";
         String platform = "server";
         List<IsolatePolicy.Capability> additionalCapabilities = new ArrayList<>();
+        Set<String> allowedHostClasses = new LinkedHashSet<>();
         String filename = null;
 
         for (String arg : args) {
@@ -38,14 +41,20 @@ public final class OresMain {
                         additionalCapabilities.add(IsolatePolicy.Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
                     }
                 }
+            } else if (arg.startsWith("--allow-host-class=")) {
+                String raw = arg.substring("--allow-host-class=".length()).trim();
+                if (raw.isEmpty()) {
+                    throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
+                }
+                allowedHostClasses.add(raw);
             } else if (arg.startsWith("--")) {
                 throw new IllegalArgumentException("unknown option: " + arg);
             } else if (filename == null) filename = arg;
-            else throw new IllegalArgumentException("only one .ores file may be supplied");
+            else throw new IllegalArgumentException("only one .ores or .java source file may be supplied");
         }
 
         if (filename == null) {
-            System.err.println("usage: oreslang-compiler [--check] [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] <file.ores>");
+            System.err.println("usage: oreslang-compiler [--check] [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] <file.ores|file.java>");
             System.exit(2);
             return;
         }
@@ -69,7 +78,7 @@ public final class OresMain {
             policy = policy.withCapabilities(additionalCapabilities.toArray(IsolatePolicy.Capability[]::new));
         }
 
-        LinkedProgramRunner.run(path, policy, profile, System.out, System.err);
+        LinkedProgramRunner.run(path, policy, profile, allowedHostClasses, System.out, System.err);
     }
 
     static String formatCheckDiagnostic(Path path, Exception error) {

@@ -104,6 +104,13 @@ public final class Parser {
             } else {
                 names.add(consumeImportName(kind));
             }
+
+            if (!wildcard && match(AS)) {
+                if (names.size() != 1) {
+                    throw error(previous(), "named import aliases require exactly one selected name");
+                }
+                namespace = consume(IDENT, "expected import alias").lexeme();
+            }
         }
 
         consume(FROM, "expected 'from' in import");
@@ -614,9 +621,7 @@ public final class Parser {
             java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
             if (!check(RBRACE)) {
                 do {
-                    String field;
-                    if (match(IDENT, STRING)) field = previous().lexeme();
-                    else throw error(peek(), "expected record type field name");
+                    String field = consumeStaticObjectKeyName("expected record type field name");
                     consume(COLON, "expected ':' after record type field name");
                     Ast.TypeRef fieldType = parseTypeRef();
                     if (members.putIfAbsent(field, fieldType) != null) {
@@ -1124,13 +1129,23 @@ public final class Parser {
         return type == STOP || type == DO || type == DONE;
     }
 
+    private String consumeStaticObjectKeyName(String message) {
+        if (match(STRING)) return previous().lexeme();
+        Token token = peek();
+        if (isMemberNameToken(token.type())) {
+            advance();
+            return token.lexeme();
+        }
+        throw error(token, message);
+    }
+
     private String consumeMemberName() {
         Token token = peek();
         if (isMemberNameToken(token.type())) {
             if (isReservedCallableName(token.type())
                     && !reservedCallableNameFollowedByInvocation(current)) {
                 throw error(token, "'" + token.lexeme()
-                        + "' is reserved and may only be used as a function name in a call");
+                        + "' is reserved and may only be used as a function name in a call or as an object/map key");
             }
             advance();
             return token.lexeme();
@@ -1221,11 +1236,18 @@ public final class Parser {
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
-                String name;
-                if (match(IDENT, STRING)) name = previous().lexeme();
-                else throw error(peek(), "expected object field name");
-                consume(COLON, "expected ':' after object field name");
-                fields.add(new Ast.ObjectField(name, parseExpression()));
+                Ast.ObjectField field;
+                if (match(BACKTICK)) {
+                    Ast.Expr key = parseExpression();
+                    consume(BACKTICK, "expected closing backtick after dynamic object key");
+                    consume(COLON, "expected ':' after dynamic object key");
+                    field = Ast.ObjectField.dynamic(key, parseExpression());
+                } else {
+                    String name = consumeStaticObjectKeyName("expected object field name");
+                    consume(COLON, "expected ':' after object field name");
+                    field = Ast.ObjectField.named(name, parseExpression());
+                }
+                fields.add(field);
             } while (match(COMMA));
         }
         consume(RBRACE, "expected '}' after obj literal");
