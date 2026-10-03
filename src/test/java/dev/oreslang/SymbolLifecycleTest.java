@@ -207,6 +207,37 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void symbolBuiltinNamespaceCannotBeShadowed() {
+        IllegalArgumentException moduleShadow = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module Symbol as
+                          pub fnc x() => int { return 1; }
+                        end
+                        """)));
+        assertTrue(moduleShadow.getMessage().contains("reserved"));
+
+        IllegalArgumentException classShadow = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define class Symbol as
+                          end
+                        end
+                        """)));
+        assertTrue(classShadow.getMessage().contains("reserved"));
+
+        IllegalArgumentException localShadow = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          pub fnc x() => int {
+                            val int Symbol = 1;
+                            return Symbol;
+                          }
+                        end
+                        """)));
+        assertTrue(localShadow.getMessage().contains("reserved"));
+    }
+
+    @Test
     void untrustedPoliciesCannotCreateDecodeOrReceiveSymbols() {
         Ast.Program literalProgram = TypeChecker.check(Parser.parse("""
                 define module app as
