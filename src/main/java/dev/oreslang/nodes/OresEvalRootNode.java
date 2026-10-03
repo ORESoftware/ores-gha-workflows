@@ -637,6 +637,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "id" -> spawn.id();
                     case "ready" -> spawn.ready();
+                    case "done" -> spawn.done();
                     case "result" -> spawn.result();
                     default -> throw new IllegalArgumentException("unknown ActorSpawn member " + name);
                 };
