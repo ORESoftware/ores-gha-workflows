@@ -474,16 +474,21 @@ val ref = await pending.ready;
 // Equivalent readiness shorthand:
 val other_ref = await spawn worker(1);
 
-// Actor function completion is a separate future.
+// Completion is separate from readiness.
+val completed = await pending.done;
+
+// Actor functions additionally expose their returned value.
 val answer = await pending.result;
 ```
 
 `spawn actor_fnc(...)` returns an `ActorSpawn<T>` ticket immediately after the
 runtime has reserved an `ActorId` and admitted the initial spawn/message. The
 fast path must not wait for actor behavior construction or actor-callable
-completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`, and for
-non-`void` actor functions `result: Future<T>`. Actor routines have no
-`result` member.
+completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`,
+and `done: Future<bool>`. `done` resolves to `true` only after normal actor
+callable completion and fails exceptionally on actor failure/cancellation.
+Non-`void` actor functions additionally expose `result: Future<T>`; actor
+routines deliberately have no `result` value.
 
 `await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
 It never waits for the actor function/routine to finish. The ready reference
