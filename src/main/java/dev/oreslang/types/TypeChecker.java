@@ -315,10 +315,17 @@ public final class TypeChecker {
                 }
 
                 Ast.ClassDecl proxyClass = singletonProxyClass(field);
+                Type declaredStateType = resolve(field.type(), Set.of(), null);
                 boolean exportedProxy = field.visibility() == Ast.Visibility.PUBLIC && proxyClass != null;
-                if (field.visibility() == Ast.Visibility.PUBLIC && !exportedProxy) {
+                boolean exportedSymbol = field.visibility() == Ast.Visibility.PUBLIC && isSymbolType(declaredStateType);
+                if (field.visibility() == Ast.Visibility.PUBLIC && !exportedProxy && !exportedSymbol) {
                     throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
-                            + "' cannot be public unless it is an immutable class-instance proxy");
+                            + "' cannot be public unless it is an immutable class-instance proxy or Symbol identity");
+                }
+
+                if (exportedSymbol && field.bindingKind() == Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException("exported singleton Symbol '" + module.name() + "." + field.name()
+                            + "' must use val or const so the process-wide identity cannot be rebound");
                 }
 
                 if (exportedProxy) {
@@ -332,7 +339,7 @@ public final class TypeChecker {
                                 + "' must be initialized with a context-free 'new " + proxyClass.name() + "(...)'");
                     }
                 } else {
-                    Type stateType = resolve(field.type(), Set.of(), null);
+                    Type stateType = declaredStateType;
                     if (!isProcessStableStateType(stateType)) {
                         throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
                                 + "' uses process-unstable state type " + field.type()
@@ -365,6 +372,10 @@ public final class TypeChecker {
 
                 Set<String> generics = Set.copyOf(fn.genericParameters());
                 for (Ast.Param param : fn.parameters()) {
+                    if (param.mutable()) {
+                        throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
+                                + "' cannot accept mut parameters because mailbox transport passes frozen snapshots");
+                    }
                     if (param.structural()) {
                         throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
                                 + "' cannot use structural parameters until structural Send is explicit");
@@ -447,6 +458,10 @@ public final class TypeChecker {
                         + "' cannot be generic until proxy Send constraints are explicit");
             }
             for (Ast.Param param : method.parameters()) {
+                if (param.mutable()) {
+                    throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                            + "' cannot accept mut transported parameters because mailbox transport passes frozen snapshots");
+                }
                 if (param.structural()) {
                     throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                             + "' cannot use structural transported parameters");
@@ -632,6 +647,23 @@ public final class TypeChecker {
         }
 
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr symbolCall
+                    && symbolCall.receiver() instanceof Ast.NameExpr symbolNamespace
+                    && symbolNamespace.name().equals("Symbol")) {
+                if (symbolCall.member().equals("local")) {
+                    throw processEffectError(where,
+                            "actor-local Symbol construction 'Symbol.local(...)'");
+                }
+                if (!symbolCall.member().equals("process")
+                        && !symbolCall.member().equals("stable")) {
+                    throw processEffectError(where,
+                            "unknown Symbol factory member '" + symbolCall.member() + "'");
+                }
+                for (Ast.Expr arg : call.arguments()) {
+                    validateProcessOwnedExpr(processOwner, processClass, arg, locals, where);
+                }
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name && !locals.contains(name.name())) {
                 Ast.FunctionDecl target = findFunction(name.name());
                 if (target != null) {
@@ -667,6 +699,12 @@ public final class TypeChecker {
         }
 
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Symbol") && created.type().arguments().isEmpty()) {
+                for (Ast.Expr arg : created.arguments()) {
+                    validateProcessOwnedExpr(processOwner, processClass, arg, locals, where);
+                }
+                return;
+            }
             Ast.ClassDecl target = findClass(created.type().name());
             if (target == null) {
                 throw processEffectError(where, "unresolved or imported class construction '" + created.type().name() + "'");
@@ -868,9 +906,16 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean isSymbolType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Symbol")
+                && named.arguments().isEmpty();
+    }
+
     private boolean isProcessStableStateType(Type type) {
         if (type instanceof StringLiteral) return true;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (isSymbolType(type)) return true;
         if (type instanceof ListType list) return isProcessStableStateType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(this::isProcessStableStateType);
         if (type instanceof Named named && named.name().equals("Option") && named.arguments().size() == 1) {
@@ -884,6 +929,7 @@ public final class TypeChecker {
         if (type instanceof Primitive primitive) {
             return primitive != Primitive.VOID || allowVoid;
         }
+        if (isSymbolType(type)) return true;
         if (type instanceof ListType list) return isActorSendableType(list.element(), false);
         if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(item -> isActorSendableType(item, false));
         if (type instanceof Record record) return record.members().values().stream()
@@ -922,6 +968,20 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             return isPureSingletonInitializer(indexed.receiver(), initializedFields)
                     && isPureSingletonInitializer(indexed.index(), initializedFields);
+        }
+        if (expr instanceof Ast.NewExpr created
+                && created.type().name().equals("Symbol")
+                && created.type().arguments().isEmpty()
+                && created.arguments().size() == 1) {
+            return isPureSingletonInitializer(created.arguments().getFirst(), initializedFields);
+        }
+        if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (member.member().equals("process") || member.member().equals("stable"))
+                && call.arguments().size() == 1) {
+            return isPureSingletonInitializer(call.arguments().getFirst(), initializedFields);
         }
         if (expr instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.NameExpr name
@@ -1142,6 +1202,7 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof Ast.Symbol) return new Named("Symbol", List.of());
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -1149,6 +1210,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("Symbol")) return new Named("$SymbolFactory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -1243,6 +1305,27 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr lifecycleCall
+                    && lifecycleCall.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("process")
+                    && lifecycleCall.member().equals("collect_singleton")) {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "process.collect_singleton expects exactly one singleton module");
+                }
+                Ast.Expr target = call.arguments().getFirst();
+                if (!(target instanceof Ast.NameExpr moduleName)) {
+                    throw new IllegalArgumentException(
+                            "process.collect_singleton expects a singleton module namespace");
+                }
+                Ast.ModuleDecl module = modules.get(moduleName.name());
+                if (module == null || !module.singleton()) {
+                    throw new IllegalArgumentException(
+                            "process.collect_singleton target must be a singleton module: "
+                                    + moduleName.name());
+                }
+                return new Named("Future", List.of(Primitive.BOOL));
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -1331,9 +1414,14 @@ public final class TypeChecker {
                                 && field.visibility() == Ast.Visibility.PUBLIC
                                 && field.name().equals(member.member())) {
                             Type declared = resolve(field.type(), Set.of(), null);
+                            if (isSymbolType(declared)) {
+                                return module.name().equals(env.moduleName)
+                                        ? declared
+                                        : new Named("Future", List.of(declared));
+                            }
                             if (!(declared instanceof Named named) || findClass(named.name()) == null) {
                                 throw new IllegalArgumentException("singleton module field '" + module.name() + "."
-                                        + field.name() + "' is not an exported class-instance proxy");
+                                        + field.name() + "' is not an exported class-instance proxy or Symbol identity");
                             }
                             return module.name().equals(env.moduleName)
                                     ? named
@@ -1349,6 +1437,14 @@ public final class TypeChecker {
             Type receiver = typeOf(member.receiver(), env, generics, self);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            }
+            if (receiver instanceof Named named && named.name().equals("$SymbolFactory")) {
+                return switch (member.member()) {
+                    case "local", "process", "stable" ->
+                            new Function(List.of(Primitive.STRING), new Named("Symbol", List.of()));
+                    default -> throw new IllegalArgumentException(
+                            "unknown Symbol member '" + member.member() + "'");
+                };
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -1408,6 +1504,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Symbol")) {
+                if (!created.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                if (created.arguments().size() != 1) {
+                    throw new IllegalArgumentException("new Symbol(...) expects exactly one UUID String");
+                }
+                Type keyType = typeOf(created.arguments().getFirst(), env, generics, self);
+                if (!isStringLike(keyType)) {
+                    throw new IllegalArgumentException("new Symbol(...) key must be a String");
+                }
+                return new Named("Symbol", List.of());
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
             String ownerName = classOwners.get(klass);
@@ -1553,6 +1662,10 @@ public final class TypeChecker {
                 validateSingletonTransportCallChildren(call, currentModule);
                 return;
             }
+            if (awaited.expression() instanceof Ast.MemberExpr member
+                    && isExternalSingletonSymbolFieldMember(member, currentModule)) {
+                return;
+            }
             validateSingletonTransportExpr(awaited.expression(), currentModule);
             return;
         }
@@ -1591,6 +1704,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("singleton object proxy handles cannot be extracted; call and await a method on "
                         + ((Ast.NameExpr) member.receiver()).name() + "." + member.member() + " directly");
             }
+            if (isExternalSingletonSymbolFieldMember(member, currentModule)) {
+                throw new IllegalArgumentException("singleton Symbol fields must be immediately awaited: "
+                        + ((Ast.NameExpr) member.receiver()).name() + "." + member.member());
+            }
             validateSingletonTransportExpr(member.receiver(), currentModule);
         } else if (expr instanceof Ast.IndexExpr indexed) {
             validateSingletonTransportExpr(indexed.receiver(), currentModule);
@@ -1628,6 +1745,23 @@ public final class TypeChecker {
                     && field.visibility() == Ast.Visibility.PUBLIC
                     && field.name().equals(member.member())
                     && singletonProxyClass(field) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isExternalSingletonSymbolFieldMember(Ast.MemberExpr member, String currentModule) {
+        if (!(member.receiver() instanceof Ast.NameExpr namespace)) return false;
+        Ast.ModuleDecl owner = modules.get(namespace.name());
+        if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
+        for (Ast.Decl decl : owner.declarations()) {
+            if (decl instanceof Ast.FieldDecl field
+                    && field.visibility() == Ast.Visibility.PUBLIC
+                    && field.name().equals(member.member())
+                    && field.type() != null
+                    && field.type().name().equals("Symbol")
+                    && field.type().arguments().isEmpty()) {
                 return true;
             }
         }
