@@ -7,7 +7,6 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresNull;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -98,24 +97,6 @@ public final class NativeNetBuiltin implements BuiltinValue {
                 byte[] bytes = toBytes(source);
                 return (long) io(() -> NativeSocketBridge.write(
                         handle, bytes, offset, length));
-            };
-            case "write_utf8" -> (BuiltinCallable) args -> {
-                require(args, 2, name);
-                admit(name);
-                NativeSocketHandle handle = handle(args, 0, name);
-                byte[] bytes = str(args, 1).getBytes(StandardCharsets.UTF_8);
-                int offset = 0;
-                while (offset < bytes.length) {
-                    int at = offset;
-                    int count = io(() -> NativeSocketBridge.write(
-                            handle, bytes, at, bytes.length - at));
-                    if (count <= 0) {
-                        throw new IllegalStateException(
-                                "native send returned " + count);
-                    }
-                    offset += count;
-                }
-                return (long) bytes.length;
             };
             case "shutdown_input" -> (BuiltinCallable) args -> {
                 require(args, 1, name);
