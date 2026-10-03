@@ -10,6 +10,10 @@ define module http_wire
         || status == 307 || status == 308;
   }
 
+  pub fnc supported_scheme(string scheme) => bool {
+    return scheme == "http" || scheme == "https";
+  }
+
   pub fnc default_port(string scheme) => int {
     if scheme == "http"; do
       return 80;
@@ -17,7 +21,8 @@ define module http_wire
     if scheme == "https"; do
       return 443;
     fi
-    raise "unsupported URI scheme";
+    // Fail closed until Result<T,E>/raise is available on this stack.
+    return 0;
   }
 
   pub fnc status_forbids_body(int status) => bool {
@@ -63,7 +68,8 @@ define module http_wire
     if policy == "ALWAYS"; do
       return true;
     fi
-    raise "unknown redirect policy";
+    // Unknown policy strings are never permissive.
+    return false;
   }
 
   pub fnc restricted_request_header(string canonical_lower_name) => bool {
