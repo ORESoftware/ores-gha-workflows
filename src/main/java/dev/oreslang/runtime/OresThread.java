@@ -46,6 +46,7 @@ public final class OresThread {
     /** Opaque handle for the native OresThread control block; published by JNI before target execution. */
     private volatile long nativeHandle;
     private volatile long nativeThreadId;
+    private volatile long finalCpuTimeNanos;
     private volatile Throwable failure;
 
     public OresThread(Runnable target) {
@@ -76,6 +77,11 @@ public final class OresThread {
         slotHeld.set(true);
         try {
             nativeStart(this, name, configuredStackBytes());
+            // An interrupt may race with start() before JNI publishes the
+            // native handle. Re-publish that intent once the control block is live.
+            if (interrupted.get() && nativeHandle != 0L) {
+                nativeInterrupt(nativeHandle);
+            }
         } catch (Throwable startFailure) {
             if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
             failure = startFailure;
@@ -92,19 +98,39 @@ public final class OresThread {
     private void nativeRun() {
         CURRENT.set(this);
         nativeThreadId = nativeCurrentThreadId();
+
+        // start()/interrupt() may race while JNI is attaching this pthread.
+        // The Java flag is authoritative intent; synchronize it into the native
+        // control block before target code can enter a native wait.
+        if (interrupted.get() && nativeHandle != 0L) {
+            nativeInterrupt(nativeHandle);
+        }
+
+        Throwable targetFailure = null;
         try {
             target.run();
-            terminated.complete(null);
-        } catch (Throwable targetFailure) {
-            failure = targetFailure;
-            terminated.completeExceptionally(targetFailure);
+        } catch (Throwable failure) {
+            targetFailure = failure;
+            this.failure = failure;
         } finally {
+            long handle = nativeHandle;
+            if (handle != 0L) {
+                finalCpuTimeNanos = nativeCpuTimeNanos(handle);
+            }
+
             state.set(State.TERMINATED);
             CURRENT.remove();
-            long handle = nativeHandle;
             nativeHandle = 0L;
             if (handle != 0L) nativeRelease(handle);
             if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
+
+            // join() observes completion only after all Java-visible termination
+            // state and native release intent have been published.
+            if (targetFailure == null) {
+                terminated.complete(null);
+            } else {
+                terminated.completeExceptionally(targetFailure);
+            }
         }
     }
 
@@ -224,7 +250,10 @@ public final class OresThread {
     /** CPU consumed by this native thread when it is still running. */
     public long cpuTimeNanos() {
         long handle = nativeHandle;
-        return handle == 0L ? 0L : nativeCpuTimeNanos(handle);
+        if (handle != 0L) {
+            return Math.max(finalCpuTimeNanos, nativeCpuTimeNanos(handle));
+        }
+        return finalCpuTimeNanos;
     }
 
     public static boolean isCurrentOresThread() {
