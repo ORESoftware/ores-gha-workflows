@@ -487,8 +487,9 @@ fast path must not wait for actor behavior construction or actor-callable
 completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`,
 and `done: Future<bool>`. `done` resolves to `true` only after normal actor
 callable completion and fails exceptionally on actor failure/cancellation.
-Non-`void` actor functions additionally expose `result: Future<T>`; actor
-routines deliberately have no `result` value.
+Any non-`void` actor callable—`fnc` or `routine`—additionally exposes
+`result: Future<T>`. A void actor callable has no result value and uses
+`done` when completion must be observed.
 
 `await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
 It never waits for the actor function/routine to finish. The ready reference
