@@ -1,0 +1,87 @@
+name: native-net-more-oreslang
+
+on:
+  push:
+    branches:
+      - "feat/oreslang-native-net-more-oreslang-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  opaque-native-net:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Reject Java networking transport delegation
+        run: |
+          if grep -R -n -E '^[[:space:]]*import[[:space:]]+java\.net\.(Socket|ServerSocket|http\.)' src/main/java/dev/oreslang/net; then
+            echo "network implementation must not import Java socket/http transports" >&2
+            exit 1
+          fi
+
+      - name: Enforce opaque Oreslang socket ABI
+        run: |
+          ! grep -n -E '\bint[[:space:]]+(fd|handle)\b' stdlib/net/native.ores
+          grep -q 'NativeSocketHandle' stdlib/net/native.ores
+          grep -q '&NativeSocketHandle' stdlib/net/native.ores
+          ! grep -q 'integer64' src/main/java/dev/oreslang/net/NativeNetBuiltin.java
+          grep -q 'private static native long connect' src/main/java/dev/oreslang/net/NativeSocketBridge.java
+          grep -q 'private static native long listen' src/main/java/dev/oreslang/net/NativeSocketBridge.java
+          grep -q 'private static native long accept' src/main/java/dev/oreslang/net/NativeSocketBridge.java
+
+      - name: Verify HTTP policy is authored in Oreslang
+        run: |
+          grep -q 'redirect_rewrites_to_get' stdlib/net/http.ores
+          grep -q 'response_may_have_body' stdlib/net/http.ores
+          grep -q 'restricted_request_header' stdlib/net/http.ores
+          ! grep -q 'java.net' stdlib/net/http.ores
+
+      - name: Compile exact mirrored source
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Run opaque-boundary and native primitive tests
+        run: |
+          mvn -B -ntp             -Dtest=dev.oreslang.net.NativeNetOreslangBoundaryTest,dev.oreslang.net.NativeSocketHandleTest,dev.oreslang.net.NativeSocketBridgeTest             test
+
+      - name: Build runtime classpath
+        run: mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+
+      - name: Run Oreslang-authored HTTP server over native sockets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java             -cp "target/classes:$(cat target/classpath.txt)"             dev.oreslang.launcher.OresMain             --platform=server             --allow=NETWORK             examples/native-http-server.ores             >target/native-http-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if body="$(curl -fsS --max-time 1 http://127.0.0.1:18080/ 2>/dev/null)"; then
+              test "$body" = "OK"
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat target/native-http-server.log >&2 || true
+            exit 1
+          fi
+
+          wait "$server_pid"
+          trap - EXIT
