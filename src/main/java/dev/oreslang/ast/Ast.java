@@ -235,6 +235,20 @@ public final class Ast {
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
+
+    /** Identifier-form source symbol literal, e.g. :connected. */
+    public record Symbol(String name) {
+        public static final int MAX_NAME_LENGTH = 128;
+        public Symbol {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("symbol literal name cannot be blank");
+            if (name.length() > MAX_NAME_LENGTH) {
+                throw new IllegalArgumentException("symbol literal name exceeds " + MAX_NAME_LENGTH + " characters");
+            }
+            if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("symbol literal name must be an identifier");
+            }
+        }
+    }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
