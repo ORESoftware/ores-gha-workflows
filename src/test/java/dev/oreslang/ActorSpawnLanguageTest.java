@@ -175,6 +175,34 @@ final class ActorSpawnLanguageTest {
     }
 
     @Test
+    void isoactorCannotEscalateBySpawningSharedActorCallable() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub actor fnc shared_child() => int {
+                          return 1;
+                        }
+
+                        pub isoactor routine private_parent() => void {
+                          val denied = spawn shared_child();
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("SHARED_MEMORY"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub isoactor fnc private_child() => int {
+                  return 1;
+                }
+
+                pub isoactor routine private_parent() => void {
+                  val child = spawn private_child();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void trustedActorMaySpawnWithoutSynchronouslyWaiting() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc child() => int {
