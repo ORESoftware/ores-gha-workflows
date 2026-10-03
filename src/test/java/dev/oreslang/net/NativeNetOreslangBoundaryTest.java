@@ -50,7 +50,7 @@ final class NativeNetOreslangBoundaryTest {
                   val client = native_net.accept(&listener);
                   val bytes = native_net.read_some(&client, 1024);
                   val reply = arr[79, 75];
-                  native_net.write(&client, reply, 0, 2);
+                  native_net.write(&client, &reply, 0, 2);
                   native_net.close(client);
                   native_net.close(listener);
                   return;
