@@ -136,6 +136,7 @@ final class OresThreadTest {
                   val bool alive = worker.isAlive();
                   val bool interrupted = worker.isInterrupted();
                   val int id = worker.threadId();
+                  val int cpu_nanos = worker.cpuTimeNanos();
                   val string name = worker.getName();
                   worker.setName("renamed");
                   worker.join();

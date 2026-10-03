@@ -1755,4 +1755,31 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void privateActorCpuIsChargedToLogicalActorOnNativeCarrier() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1, 1, 1, 4, Long.MAX_VALUE, 64);
+        CountDownLatch done = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var ref = runtime.<Integer>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                long value = 0L;
+                for (int i = 0; i < 2_000_000; i++) {
+                    value += i;
+                    if ((i & 0x3fff) == 0) context.checkpoint();
+                }
+                if (value == Long.MIN_VALUE) throw new AssertionError("unreachable");
+                done.countDown();
+                context.self().stop();
+            });
+
+            ref.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(ref.cpuTimeNanos() > 0L,
+                    "native carrier CPU must be charged to the logical actor");
+        }
+    }
+
+
 }

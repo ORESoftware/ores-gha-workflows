@@ -43,7 +43,8 @@ public final class OresThread {
     private final AtomicBoolean slotHeld = new AtomicBoolean();
     private final CompletableFuture<Void> terminated = new CompletableFuture<>();
     private volatile String name;
-    private volatile Thread attachedJvmThread;
+    /** Opaque handle for the native OresThread control block; published by JNI before target execution. */
+    private volatile long nativeHandle;
     private volatile long nativeThreadId;
     private volatile Throwable failure;
 
