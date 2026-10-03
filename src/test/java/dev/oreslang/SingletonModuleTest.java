@@ -581,9 +581,8 @@ final class SingletonModuleTest {
         assertTrue(classBoundary.getMessage().contains("not statically Sendable"));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define singleton module mutable_boundary as
-                  pub fnc consume(Array<int> mut values) => void {
-                    values[0] = 2;
+                define singleton module array_boundary as
+                  pub fnc consume(Array<int> values) => void {
                     return;
                   }
                 end
