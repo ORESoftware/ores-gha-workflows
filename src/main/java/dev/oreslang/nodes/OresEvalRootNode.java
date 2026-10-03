@@ -645,20 +645,11 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ActorRuntime.ActorRef<?> ref) {
                 return switch (name) {
                     case "id" -> ref.id();
-                    case "mailbox" -> ref.recipient();
-                    default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
-                };
-            }
-            if (receiver instanceof ActorRuntime.Recipient<?> recipient) {
-                return switch (name) {
-                    case "send" -> (Invokable) args -> {
-                        requireOne(args, "ActorMailbox.send");
-                        @SuppressWarnings("unchecked")
-                        ActorRuntime.Recipient<Object> target = (ActorRuntime.Recipient<Object>) recipient;
-                        target.send(args.getFirst());
-                        return null;
+                    case "is_alive" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.is_alive");
+                        return ref.isAlive();
                     };
-                    default -> throw new IllegalArgumentException("unknown ActorMailbox member " + name);
+                    default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
                 };
             }
             if (receiver instanceof CompletionStage<?> stage) {
