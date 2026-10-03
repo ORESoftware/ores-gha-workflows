@@ -2902,8 +2902,12 @@ public final class ActorRuntime implements AutoCloseable {
                     } catch (LinkageError fatal) {
                         completion.failFromRuntime(fatal);
                         throw fatal;
-                    } catch (Throwable failure) {
+                    } catch (Exception failure) {
                         completion.failFromRuntime(failure);
+                        throw failure;
+                    } catch (Error failure) {
+                        completion.failFromRuntime(failure);
+                        throw failure;
                     } finally {
                         turnContext.self().stop();
                     }
