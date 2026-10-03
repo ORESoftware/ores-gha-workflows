@@ -377,6 +377,21 @@ public final class OwnershipChecker {
             }
             checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.name().equals("ActorSpawn")) {
+                return switch (member.member()) {
+                    case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
+                    case "ready", "done", "result" ->
+                            new ValueInfo(Ast.TypeRef.simple("Future"), ValueKind.MOVE_ONLY, null);
+                    default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                };
+            }
+            if (concreteReceiver != null && concreteReceiver.name().equals("ActorRef")) {
+                return switch (member.member()) {
+                    case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
+                    case "mailbox" -> new ValueInfo(Ast.TypeRef.simple("ActorMailbox"), ValueKind.MOVE_ONLY, null);
+                    default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                };
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
@@ -433,6 +448,9 @@ public final class OwnershipChecker {
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
+            }
+            if (awaitedValue.type.name().equals("ActorSpawn")) {
+                return new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.MOVE_ONLY, null);
             }
             return awaitedValue;
         }
@@ -1408,7 +1426,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","void","ActorId","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
