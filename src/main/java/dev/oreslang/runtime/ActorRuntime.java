@@ -834,9 +834,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private static final class DispatcherGroup {
         private final DispatcherConfig config;
-        private final ThreadPoolExecutor privateDispatcher;
-        private final ThreadPoolExecutor sharedDispatcher;
-        private final ThreadPoolExecutor untrustedDispatcher;
+        private final NativeCarrierExecutor privateDispatcher;
+        private final NativeCarrierExecutor sharedDispatcher;
+        private final NativeCarrierExecutor untrustedDispatcher;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final Semaphore rootSlots;
@@ -1026,9 +1026,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherGroup dispatcherGroup;
     private final boolean ownsDispatcherGroup;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
-    private final ThreadPoolExecutor privateDispatcher;
-    private final ThreadPoolExecutor sharedDispatcher;
-    private final ThreadPoolExecutor untrustedDispatcher;
+    private final NativeCarrierExecutor privateDispatcher;
+    private final NativeCarrierExecutor sharedDispatcher;
+    private final NativeCarrierExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ScheduledThreadPoolExecutor messageWatchdog;
     private final AtomicInteger privateCompensatingThreads;
@@ -1090,6 +1090,25 @@ public final class ActorRuntime implements AutoCloseable {
                 false);
     }
 
+    /**
+     * Host/launcher entry point for main-process work. The complete Graal
+     * context lifecycle must be submitted from outside Context.eval/RootNode;
+     * hopping threads after a context is already entered violates Graal
+     * thread-affinity rules.
+     */
+    public static <T> T executeProcessRoot(
+            IsolatePolicy policyCeiling,
+            Supplier<T> task) {
+        Objects.requireNonNull(policyCeiling, "policyCeiling");
+        Objects.requireNonNull(task, "task");
+        ActorRuntime hostRuntime = processShared(policyCeiling, TurnExecutor.direct());
+        try {
+            return hostRuntime.executeRootTask(task);
+        } finally {
+            hostRuntime.close();
+        }
+    }
+
     private ActorRuntime(
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
@@ -1146,11 +1165,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public DispatcherStats dispatcherStats(ActorKind kind) {
         Objects.requireNonNull(kind, "kind");
-        ThreadPoolExecutor executor = dispatcherFor(kind);
+        NativeCarrierExecutor executor = dispatcherFor(kind);
         return new DispatcherStats(
                 dispatcherConfig.parallelismFor(kind),
                 executor.getActiveCount(),
-                executor.getQueue().size(),
+                executor.getQueueSize(),
                 executor.getCompletedTaskCount(),
                 compensationCounter(kind).get(),
                 overrunCounter(kind).get(),
@@ -1847,6 +1866,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Remaining per-message execution fuel, or Long.MAX_VALUE for trusted actors. */
         long fuelRemaining();
 
+        /** Native carrier CPU charged to this actor across completed turns. */
+        long cpuTimeNanos();
+
         /** Remaining hard lifetime; trusted actors report their policy wall-time. */
         Duration remainingLifetime();
     }
@@ -1855,6 +1877,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final AtomicLong cpuTimeNanos = new AtomicLong();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -1865,6 +1888,16 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
+        public long cpuTimeNanos() {
+            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
+            if (caller != null
+                    && caller.kind() == ActorKind.UNTRUSTED
+                    && !caller.actorId().equals(id)) {
+                throw new SecurityException(
+                        "untrusted actors cannot inspect another actor's CPU accounting");
+            }
+            return cpuTimeNanos.get();
+        }
         public Optional<Throwable> failure() {
             ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
             if (caller != null
@@ -2975,6 +3008,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         if (cell != null) {
             cell.throwIfControlStopped();
+            cell.checkCpuBudget();
             cell.checkUntrustedBudget(1);
         }
         if (Thread.currentThread().isInterrupted()) {
@@ -4039,7 +4073,7 @@ public final class ActorRuntime implements AutoCloseable {
         untrustedActorCount.set(0);
     }
 
-    private ThreadPoolExecutor dispatcherFor(ActorKind kind) {
+    private NativeCarrierExecutor dispatcherFor(ActorKind kind) {
         return switch (kind) {
             case PRIVATE -> privateDispatcher;
             case SHARED -> sharedDispatcher;
@@ -4080,7 +4114,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (current >= limit) return false;
             if (!counter.compareAndSet(current, current + 1)) continue;
 
-            ThreadPoolExecutor executor = dispatcherFor(kind);
+            NativeCarrierExecutor executor = dispatcherFor(kind);
             synchronized (executor) {
                 int base = dispatcherConfig.parallelismFor(kind);
                 int target = Math.min(
@@ -4100,7 +4134,7 @@ public final class ActorRuntime implements AutoCloseable {
             counter.incrementAndGet();
             throw new IllegalStateException("dispatcher compensation accounting underflow for " + kind);
         }
-        ThreadPoolExecutor executor = dispatcherFor(kind);
+        NativeCarrierExecutor executor = dispatcherFor(kind);
         synchronized (executor) {
             int base = dispatcherConfig.parallelismFor(kind);
             int target = Math.max(base, base + remaining);
@@ -4116,7 +4150,7 @@ public final class ActorRuntime implements AutoCloseable {
         return executor;
     }
 
-    private static ThreadPoolExecutor newDispatcher(
+    private static NativeCarrierExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
             int maxCompensatingThreads,
@@ -4127,15 +4161,11 @@ public final class ActorRuntime implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             maxThreads = Integer.MAX_VALUE;
         }
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+        return new NativeCarrierExecutor(
                 parallelism,
                 maxThreads,
-                50L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity, true),
-                namedFactory(threadPrefix),
-                new ThreadPoolExecutor.AbortPolicy());
-        return executor;
+                readyQueueCapacity,
+                threadPrefix);
     }
 
     private static ThreadFactory namedFactory(String prefix) {
@@ -4163,6 +4193,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Duration hardLifetime;
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
+        private volatile int activeCarrierSlot = -1;
+        private volatile long activeCarrierCpuStartNanos;
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -4286,6 +4318,45 @@ public final class ActorRuntime implements AutoCloseable {
             throw new CancellationException("actor execution stopped");
         }
 
+        private long beginCpuAccounting() {
+            int slot = NativeCarrierExecutor.currentCarrierSlot();
+            long started = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+            activeCarrierSlot = slot;
+            activeCarrierCpuStartNanos = started;
+            return started;
+        }
+
+        private void endCpuAccounting(long started) {
+            long finished = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+            if (started > 0L && finished >= started) {
+                ref.cpuTimeNanos.addAndGet(finished - started);
+            }
+            activeCarrierCpuStartNanos = 0L;
+            activeCarrierSlot = -1;
+        }
+
+        private long activeCpuNanos() {
+            int slot = activeCarrierSlot;
+            long started = activeCarrierCpuStartNanos;
+            if (slot < 0 || started <= 0L) return 0L;
+            long current = dispatcherFor(kind).carrierCpuTimeNanos(slot);
+            return current >= started ? current - started : 0L;
+        }
+
+        private void checkCpuBudget() {
+            long limit = dispatcherConfig.maxMessageNanos();
+            if (limit == Long.MAX_VALUE) return;
+            long consumed = activeCpuNanos();
+            if (consumed >= limit) {
+                throw new ActorTurnExceededException(
+                        ref.id(),
+                        kind,
+                        "actor " + ref.id() + " (" + kind
+                                + ") exceeded native carrier CPU budget of "
+                                + TimeUnit.NANOSECONDS.toMillis(limit) + " ms");
+            }
+        }
+
         private long armMessageDeadline(String phase) {
             long maxNanos = dispatcherConfig.maxMessageNanos();
             if (maxNanos == Long.MAX_VALUE) return 0L;
@@ -4311,13 +4382,15 @@ public final class ActorRuntime implements AutoCloseable {
                         || activeCarrier != carrier) {
                     return;
                 }
+                long cpuNanos = activeCpuNanos();
                 ActorTurnExceededException failure = new ActorTurnExceededException(
                         ref.id(),
                         kind,
                         "actor " + ref.id() + " (" + kind + ") exceeded hard "
                                 + phase + " quantum of "
                                 + TimeUnit.NANOSECONDS.toMillis(dispatcherConfig.maxMessageNanos())
-                                + " ms");
+                                + " ms; native_cpu_ms="
+                                + TimeUnit.NANOSECONDS.toMillis(cpuNanos));
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
                 drainMailboxReservations();
@@ -4550,6 +4623,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? ActorCell.this.fuelRemaining.get()
                                 : Long.MAX_VALUE;
                     }
+                    @Override public long cpuTimeNanos() {
+                        return ref.cpuTimeNanos.get();
+                    }
                     @Override public Duration remainingLifetime() {
                         return ActorCell.this.remainingLifetime();
                     }
@@ -4557,6 +4633,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                 if (behavior == null) {
                     beginMessageBudget();
+                    long factoryCpuStart = beginCpuAccounting();
                     long factoryDeadline = armMessageDeadline("behavior initialization");
                     try {
                         Behavior<M> created = Objects.requireNonNull(
@@ -4568,6 +4645,7 @@ public final class ActorRuntime implements AutoCloseable {
                         behavior = created;
                     } finally {
                         disarmMessageDeadline(factoryDeadline);
+                        endCpuAccounting(factoryCpuStart);
                     }
                 }
 
@@ -4580,6 +4658,7 @@ public final class ActorRuntime implements AutoCloseable {
                     releaseMailboxSlot();
                     try (envelope) {
                         beginMessageBudget();
+                        long messageCpuStart = beginCpuAccounting();
                         long messageDeadline = armMessageDeadline("mailbox message");
                         try {
                             behavior.onMessage((M) envelope.value(), context);
@@ -4588,6 +4667,7 @@ public final class ActorRuntime implements AutoCloseable {
                             }
                         } finally {
                             disarmMessageDeadline(messageDeadline);
+                            endCpuAccounting(messageCpuStart);
                         }
                     }
                     processed++;

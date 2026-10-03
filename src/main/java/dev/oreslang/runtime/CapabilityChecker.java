@@ -183,7 +183,10 @@ public final class CapabilityChecker {
         return switch (kind) {
             case PRIVATE -> parent.withoutCapabilities(
                     IsolatePolicy.Capability.SHARED_MEMORY,
-                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                    IsolatePolicy.Capability.THREAD_CREATE);
+            case SHARED -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.THREAD_CREATE);
             case UNTRUSTED -> IsolatePolicy.untrustedActor();
             default -> parent;
         };
@@ -202,6 +205,9 @@ public final class CapabilityChecker {
 
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
+        }
+        if (type.name().equals("Thread")) {
+            require(policy, IsolatePolicy.Capability.THREAD_CREATE, "Thread");
         }
         for (Ast.TypeRef argument : type.arguments()) checkType(argument, policy);
         if (type.isBorrow()) checkType(type.borrowedTarget(), policy);
@@ -277,6 +283,8 @@ public final class CapabilityChecker {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex");
+        } else if (expr instanceof Ast.NameExpr n && n.name().equals("Thread")) {
+            require(policy, IsolatePolicy.Capability.THREAD_CREATE, "Thread");
         } else if (expr instanceof Ast.NameExpr n) {
             // Function values can be laundered through locals/callbacks before
             // invocation. Check the referenced body at the point the function
@@ -314,7 +322,9 @@ public final class CapabilityChecker {
                 if (path.startsWith("env.")) require(policy, IsolatePolicy.Capability.ENVIRONMENT, path);
                 if (path.startsWith("ffi.")) require(policy, IsolatePolicy.Capability.FFI, path);
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
-                if (path.startsWith("thread.")) require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
+                if (path.startsWith("thread.") || path.startsWith("Thread.")) {
+                    require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
+                }
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);

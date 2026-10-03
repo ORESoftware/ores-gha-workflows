@@ -10,6 +10,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresThread;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -62,22 +63,21 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, INIT_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(current::initialize);
+            return current.initialize();
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(
-                    () -> current.executeMain(new Object[0]));
+            return current.executeMain(new Object[0]);
         }
 
-        // Root/main guest execution belongs to the SHARED carrier domain. Keep
-        // link metadata installation outside the pool, then run init + main as
-        // one ordered root task so main never races its own initialization.
+        // RootNode is already executing inside an entered Graal context. It
+        // must not hop to another carrier here. Official launchers place the
+        // entire Context lifecycle on the process SHARED/root carrier before
+        // entering Graal; direct embedders retain ownership of their entry
+        // thread unless they opt into ActorRuntime.executeProcessRoot(...).
         current.link();
-        return context.actors().executeRootTask(() -> {
-            current.initialize();
-            return current.executeMain(arguments);
-        });
+        current.initialize();
+        return current.executeMain(arguments);
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -368,6 +368,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("Thread")) return new ThreadFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -502,6 +503,41 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Thread")) {
+                    context.requireCapability(IsolatePolicy.Capability.THREAD_CREATE, "new Thread");
+                    if (ActorRuntime.inActorExecution()) {
+                        throw new SecurityException(
+                                "actors cannot create dedicated OS threads; use actor spawning/mailboxes instead");
+                    }
+                    if (created.arguments().size() < 1 || created.arguments().size() > 2) {
+                        throw new IllegalArgumentException(
+                                "Thread constructor expects (nlex || -> { ... }) or (nlex || -> { ... }, String name)");
+                    }
+                    Ast.Expr targetExpr = created.arguments().getFirst();
+                    if (!(targetExpr instanceof Ast.LambdaExpr lambda)
+                            || !lambda.nonLexical()
+                            || !lambda.parameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Thread target must be an inline zero-argument nlex lambda; activation-local captures cannot cross onto a dedicated pthread");
+                    }
+                    Object targetValue = eval(targetExpr, env);
+                    if (!(targetValue instanceof Invokable target)) {
+                        throw new IllegalArgumentException("Thread target is not callable");
+                    }
+                    String threadName = null;
+                    if (created.arguments().size() == 2) {
+                        Object rawName = eval(created.arguments().get(1), env);
+                        if (!(rawName instanceof String text)) {
+                            throw new IllegalArgumentException("Thread name must be a String");
+                        }
+                        threadName = text;
+                    }
+                    final String configuredName = threadName;
+                    return new OresThread(
+                            () -> context.executeExplicitThreadTurn(
+                                    () -> target.call(List.of())),
+                            configuredName);
+                }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 Evaluator owner = this;
                 if (klass == null) {
@@ -587,6 +623,97 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof ThreadFacade thread) {
+                thread.context().requireCapability(IsolatePolicy.Capability.THREAD_CREATE, "Thread." + name);
+                return switch (name) {
+                    case "currentThread", "current_thread" -> (Invokable) args -> {
+                        requireZero(args, "Thread.currentThread");
+                        return OresThread.currentThread();
+                    };
+                    case "interrupted" -> (Invokable) args -> {
+                        requireZero(args, "Thread.interrupted");
+                        return OresThread.interrupted();
+                    };
+                    case "sleep" -> (Invokable) args -> {
+                        requireOne(args, "Thread.sleep");
+                        if (!(args.getFirst() instanceof Number number)) {
+                            throw new IllegalArgumentException("Thread.sleep expects integer milliseconds");
+                        }
+                        try {
+                            OresThread.sleep(number.longValue());
+                        } catch (InterruptedException interrupted) {
+                            throw new java.util.concurrent.CancellationException("Thread.sleep interrupted");
+                        }
+                        return null;
+                    };
+                    case "yield" -> (Invokable) args -> {
+                        requireZero(args, "Thread.yield");
+                        OresThread.yield();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown Thread static member " + name);
+                };
+            }
+            if (receiver instanceof OresThread thread) {
+                return switch (name) {
+                    case "start" -> (Invokable) args -> {
+                        requireZero(args, "Thread.start");
+                        thread.start();
+                        return null;
+                    };
+                    case "join" -> (Invokable) args -> {
+                        requireZero(args, "Thread.join");
+                        try {
+                            thread.join();
+                        } catch (InterruptedException interrupted) {
+                            throw new java.util.concurrent.CancellationException("Thread.join interrupted");
+                        }
+                        return null;
+                    };
+                    case "interrupt" -> (Invokable) args -> {
+                        requireZero(args, "Thread.interrupt");
+                        thread.interrupt();
+                        return null;
+                    };
+                    case "isAlive", "is_alive" -> (Invokable) args -> {
+                        requireZero(args, "Thread.isAlive");
+                        return thread.isAlive();
+                    };
+                    case "isInterrupted", "is_interrupted" -> (Invokable) args -> {
+                        requireZero(args, "Thread.isInterrupted");
+                        return thread.isInterrupted();
+                    };
+                    case "getName", "name" -> (Invokable) args -> {
+                        requireZero(args, "Thread.getName");
+                        return thread.getName();
+                    };
+                    case "setName", "set_name" -> (Invokable) args -> {
+                        requireOne(args, "Thread.setName");
+                        if (!(args.getFirst() instanceof String text)) {
+                            throw new IllegalArgumentException("Thread.setName expects a String");
+                        }
+                        thread.setName(text);
+                        return null;
+                    };
+                    case "threadId", "thread_id", "getId" -> (Invokable) args -> {
+                        requireZero(args, "Thread.threadId");
+                        return thread.threadId();
+                    };
+                    case "cpuTimeNanos", "cpu_time_nanos" -> (Invokable) args -> {
+                        requireZero(args, "Thread.cpuTimeNanos");
+                        return thread.cpuTimeNanos();
+                    };
+                    case "isVirtual", "is_virtual" -> (Invokable) args -> {
+                        requireZero(args, "Thread.isVirtual");
+                        return thread.isVirtual();
+                    };
+                    case "getState", "state" -> (Invokable) args -> {
+                        requireZero(args, "Thread.getState");
+                        return thread.getState().name();
+                    };
+                    default -> throw new IllegalArgumentException("unknown Thread member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -1326,6 +1453,7 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
+    private record ThreadFacade(OresContext context) { }
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");

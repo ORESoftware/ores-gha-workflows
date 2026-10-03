@@ -127,6 +127,20 @@ public final class OresContext implements AutoCloseable {
         return linkedCodeUnits.containsKey(codeUnitId);
     }
 
+    /**
+     * Enter this Truffle context from one explicit JNI-created OresThread.
+     * Dedicated threads are supervisor/main-process only; actor turns cannot
+     * use THREAD_CREATE to escape their dispatcher bulkhead.
+     */
+    public void executeExplicitThreadTurn(Runnable turn) {
+        requireCapability(IsolatePolicy.Capability.THREAD_CREATE, "Thread");
+        if (ActorRuntime.inActorExecution()) {
+            throw new SecurityException(
+                    "actors cannot enter a dedicated Thread; use actor spawning/mailboxes");
+        }
+        executeActorTurn(turn);
+    }
+
     private void executeActorTurn(Runnable turn) {
         boolean serialize = isolatePolicy.adversarial();
         boolean lockHeld = false;

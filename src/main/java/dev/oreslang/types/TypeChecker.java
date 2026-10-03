@@ -483,6 +483,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("Thread")) return new Named("$ThreadFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -760,6 +761,36 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type threadReceiver = deref(receiver);
+            if (threadReceiver instanceof Named threadNamed
+                    && threadNamed.name().equals("$ThreadFactory")) {
+                return switch (member.member()) {
+                    case "currentThread", "current_thread" ->
+                            new Function(List.of(), new Named("Thread", List.of()));
+                    case "interrupted" -> new Function(List.of(), Primitive.BOOL);
+                    case "sleep" -> new Function(List.of(Primitive.INT), Primitive.VOID);
+                    case "yield" -> new Function(List.of(), Primitive.VOID);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Thread static member '" + member.member() + "'");
+                };
+            }
+            if (threadReceiver instanceof Named threadNamed
+                    && threadNamed.name().equals("Thread")) {
+                return switch (member.member()) {
+                    case "start", "join", "interrupt" ->
+                            new Function(List.of(), Primitive.VOID);
+                    case "isAlive", "is_alive", "isInterrupted", "is_interrupted", "isVirtual", "is_virtual" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    case "getName", "name", "getState", "state" ->
+                            new Function(List.of(), Primitive.STRING);
+                    case "setName", "set_name" ->
+                            new Function(List.of(Primitive.STRING), Primitive.VOID);
+                    case "threadId", "thread_id", "getId", "cpuTimeNanos", "cpu_time_nanos" ->
+                            new Function(List.of(), Primitive.INT);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Thread member '" + member.member() + "'");
+                };
+            }
             Type sumReceiver = deref(receiver);
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
@@ -837,6 +868,34 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Thread")) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actors cannot create dedicated Thread instances; use actor spawning/mailboxes");
+                }
+                if (created.arguments().size() < 1 || created.arguments().size() > 2) {
+                    throw new IllegalArgumentException(
+                            "Thread constructor expects one nlex zero-argument lambda and optional String name");
+                }
+                Ast.Expr target = created.arguments().getFirst();
+                if (!(target instanceof Ast.LambdaExpr lambda)
+                        || !lambda.nonLexical()
+                        || !lambda.parameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Thread target must be an inline zero-argument nlex lambda");
+                }
+                validateLambdaAgainstExpected(
+                        lambda,
+                        new Function(List.of(), Primitive.VOID),
+                        env, generics, self);
+                if (created.arguments().size() == 2) {
+                    requireAssignable(
+                            typeOf(created.arguments().get(1), env, generics, self),
+                            Primitive.STRING,
+                            "Thread name");
+                }
+                return new Named("Thread", List.of());
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
             if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -2064,6 +2123,12 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
+            case "Thread" -> {
+                if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                    throw new IllegalArgumentException("Thread does not accept type arguments");
+                }
+                yield new Named("Thread", List.of());
+            }
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));

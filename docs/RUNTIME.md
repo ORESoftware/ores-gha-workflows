@@ -12,7 +12,7 @@
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
 9. `self` cannot be rebound.
 10. An actor has one mailbox and never executes two mailbox turns concurrently.
-11. Private, shared, and untrusted actors use separate dispatcher thread pools.
+11. Private, shared, and untrusted actors use separate bounded native carrier pools; actors are multiplexed and never own a carrier.
 12. Private and untrusted actor transport rejects synchronized shared-memory cells.
 13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
 14. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
@@ -58,11 +58,21 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 ## Truffle thread boundary
 
-`ActorRuntime` owns host dispatcher threads; guest code still receives no ambient thread-creation authority. A dispatcher carrier is marked by the runtime, explicitly enters/leaves the associated `TruffleContext` for each actor batch, and only marked actor carriers are accepted for concurrent context access.
+`ActorRuntime` owns three native actor carrier pools. On Linux/macOS the carrier is created with `pthread_create()` in `liboresthread`, then attached to the JVM once with JNI `AttachCurrentThreadAsDaemon`. The carrier repeatedly drains logical actor/root work from a bounded ready queue; actor identity is never derived from the OS/JVM thread identity.
 
-Non-adversarial contexts may therefore execute independent actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though private/shared dispatcher pools remain separate. This preserves the strict one-guest-thread sandbox contract until isolated/private actor execution is backed by per-actor inner/polyglot/native contexts.
+All maximum compensation carriers are created up front. Normal operation enables only the configured core count; watchdog compensation activates an already-created carrier that was parked in native code. This avoids creating new OS threads while a domain is already saturated.
 
-The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads is never bypassed merely because the runtime owns carrier pools.
+A dispatcher carrier is marked by the runtime, explicitly enters/leaves the associated `TruffleContext` for each actor batch, and only marked actor carriers are accepted for concurrent context access. Non-adversarial contexts may therefore execute independent actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though private/shared carrier pools remain separate.
+
+The guest `THREAD_CREATE` capability is separate from actor scheduling. Trusted supervisor/main code may create a dedicated `OresThread`; that path creates one native pthread, attaches it through JNI, and enters the Truffle context through an explicit runtime gate. Actor policies strip `THREAD_CREATE`, so shared, private/isolate, and untrusted mailbox code cannot escape CPU/memory bulkheads by allocating platform threads.
+
+`OresThread` control is native. `interrupt()` sets a cooperative flag in the native control block and wakes native waits; `sleep()` waits on the native condition variable; `yield()` uses the OS scheduler; and thread naming is applied with the platform pthread API where supported. Oreslang does not use `pthread_cancel()` to tear through a JVM/Truffle stack. Dedicated threads are process-bounded and default to a 2 MiB native stack (`ores.thread.stack-bytes`).
+
+Actor carriers use the same low-level pthread substrate but are not source-level `Thread` objects. Each of the three carrier pools has a bounded carrier count and a bounded per-carrier native stack (default 2 MiB, `ores.actor.carrier-stack-bytes`). Private/isolate and untrusted actors keep their own confined `ActorMemorySlice`; carrier stack memory is scheduler infrastructure and cannot be enlarged by guest actor code.
+
+The scheduler charges native carrier CPU time to the logical actor that occupied the carrier. Cooperative private/isolate actors are checked at compiler/runtime safepoints as well as mailbox boundaries. Untrusted actors additionally have one-message turns, fuel, hard wall deadlines, lifetime limits, bounded confined memory, and a separate carrier pool. A non-cooperating untrusted actor is never made safe by forcibly cancelling its pthread: production hard termination belongs to the independently killable Graal/native isolate or process that contains the guest. The carrier watchdog marks the actor failed, records native CPU consumed, and activates only bounded pre-created compensation carriers until that isolation boundary unwinds.
+
+Physical carrier interruption is reserved for runtime containment/watchdogs. Source-level `Thread.interrupt()` applies only to a dedicated `OresThread`, never to a multiplexed actor carrier.
 
 ## Actor scheduler, fairness, and starvation contract
 
