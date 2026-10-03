@@ -37,6 +37,8 @@ jobs:
           ! grep -n -E '\bint[[:space:]]+(fd|handle)\b' stdlib/net/native.ores
           grep -q 'NativeSocketHandle' stdlib/net/native.ores
           grep -q '&NativeSocketHandle' stdlib/net/native.ores
+          grep -q 'write_all_from' stdlib/net/native.ores
+          ! grep -q 'write_utf8' src/main/java/dev/oreslang/net/NativeNetBuiltin.java
           ! grep -q 'integer64' src/main/java/dev/oreslang/net/NativeNetBuiltin.java
           grep -q 'private static native long connect' src/main/java/dev/oreslang/net/NativeSocketBridge.java
           grep -q 'private static native long listen' src/main/java/dev/oreslang/net/NativeSocketBridge.java
@@ -64,7 +66,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          java             -cp "target/classes:$(cat target/classpath.txt)"             dev.oreslang.launcher.OresMain             --platform=server             --allow=NETWORK             examples/native-http-server.ores             >target/native-http-server.log 2>&1 &
+          cat stdlib/net/native.ores examples/native-http-server.ores             > target/native-http-server.ores
+
+          java             -cp "target/classes:$(cat target/classpath.txt)"             dev.oreslang.launcher.OresMain             --platform=server             --allow=NETWORK             target/native-http-server.ores             >target/native-http-server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 
