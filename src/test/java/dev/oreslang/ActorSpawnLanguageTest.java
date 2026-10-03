@@ -74,7 +74,7 @@ final class ActorSpawnLanguageTest {
     }
 
     @Test
-    void routineSpawnDoesNotExposeResultFuture() {
+    void voidActorCallableDoesNotExposeResultFuture() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -121,6 +121,21 @@ final class ActorSpawnLanguageTest {
                         }
                         """)));
         assertTrue(failure.getMessage().contains("argument"));
+    }
+
+    @Test
+    void nonVoidActorRoutineExposesResultFuture() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub actor routine compute(int value) => int {
+                  return value + 1;
+                }
+
+                pub routine main() => void {
+                  val pending = spawn compute(41);
+                  val answer = await pending.result;
+                  return;
+                }
+                """)));
     }
 
     @Test
