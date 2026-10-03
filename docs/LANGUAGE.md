@@ -493,7 +493,11 @@ Any non-`void` actor callable—`fnc` or `routine`—additionally exposes
 
 `await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
 It never waits for the actor function/routine to finish. The ready reference
-exposes its stable `id` and a bounded mailbox/send capability. Ordinary
+exposes stable actor identity/control metadata such as `id` and
+`is_alive()`. One-shot actor callables do **not** expose an application
+mailbox: they terminate after their invocation, so accepting queued messages
+would be misleading. Typed mailboxes belong to persistent actor behavior/receive
+semantics rather than this one-shot callable launch primitive. Ordinary
 `worker(...)` calls are compile errors when `worker` is declared `actor`.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
