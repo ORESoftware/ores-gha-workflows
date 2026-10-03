@@ -24,3 +24,5 @@ jobs:
       - run: mvn -B -ntp verify
       - run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+
+# exact-source-head: f066c3725b1fe8b4fb821d648cc51b10d3cb99c8
