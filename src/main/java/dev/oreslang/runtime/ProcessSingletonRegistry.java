@@ -146,21 +146,6 @@ public final class ProcessSingletonRegistry {
         synchronized (REGISTRY_LOCK) {
             cell = CELLS.get(normalized);
             if (cell == null) return CompletableFuture.completedFuture(false);
-            if (cell.terminalFailure != null && !cell.collectionRequested.get()) {
-                cell.collectionRequested.set(true);
-                CELLS.remove(normalized, cell);
-                Object retained = cell.state;
-                cell.state = null;
-                if (retained instanceof AutoCloseable closeable) {
-                    try {
-                        closeable.close();
-                    } catch (Exception cleanupFailure) {
-                        return CompletableFuture.failedFuture(cleanupFailure);
-                    }
-                }
-                cell.collected.complete(null);
-                return CompletableFuture.completedFuture(true);
-            }
         }
         return cell.requestCollection().thenApply(ignored -> true);
     }
@@ -526,28 +511,41 @@ public final class ProcessSingletonRegistry {
         }
 
         private CompletionStage<Void> requestCollection() {
+            Object terminalState = null;
+            boolean collectTerminalState = false;
             synchronized (lifecycleLock) {
                 if (collectionRequested.get()) return collected;
-                if (terminalFailure != null) {
-                    synchronized (REGISTRY_LOCK) {
-                        CELLS.remove(key, this);
-                    }
-                    collected.completeExceptionally(terminalFailure);
-                    return collected;
-                }
 
                 collectionRequested.set(true);
-
-                // Normal callers are capped at MAILBOX_CAPACITY, while the physical
-                // queue keeps one extra slot reserved for this barrier.
-                queuedRequests.incrementAndGet();
-                if (!mailbox.offer(Request.collectionBarrier())) {
-                    releaseQueuedSlot();
-                    collectionRequested.set(false);
-                    throw new IllegalStateException(
-                            "singleton collection barrier could not be admitted for " + diagnosticId);
+                if (terminalFailure != null) {
+                    if (!initialized) {
+                        // Initialization never produced process state, so there is
+                        // nothing to clean up or keep pinned.
+                        state = null;
+                        synchronized (REGISTRY_LOCK) {
+                            CELLS.remove(key, this);
+                        }
+                        collected.complete(null);
+                        return collected;
+                    }
+                    // An initialized singleton whose worker later terminated still
+                    // owns process state. Try explicit cleanup outside lifecycleLock;
+                    // cleanup failure must keep the state/root pinned as a tombstone.
+                    terminalState = state;
+                    collectTerminalState = true;
+                } else {
+                    // Normal callers are capped at MAILBOX_CAPACITY, while the physical
+                    // queue keeps one extra slot reserved for this barrier.
+                    queuedRequests.incrementAndGet();
+                    if (!mailbox.offer(Request.collectionBarrier())) {
+                        releaseQueuedSlot();
+                        collectionRequested.set(false);
+                        throw new IllegalStateException(
+                                "singleton collection barrier could not be admitted for " + diagnosticId);
+                    }
                 }
             }
+            if (collectTerminalState) completeCollection(terminalState);
             return collected;
         }
 
@@ -647,32 +645,43 @@ public final class ProcessSingletonRegistry {
         }
 
         private void completeCollection(Object state) {
-            Throwable cleanupFailure = null;
             try {
                 if (state instanceof AutoCloseable closeable) closeable.close();
-            } catch (Throwable failure) {
-                cleanupFailure = failure;
-            } finally {
-                // Clear only after cleanup: cleanup is allowed to observe the
-                // still-live singleton state, but no stale Handle may keep it
-                // rooted after collection completes.
-                this.state = null;
-                synchronized (REGISTRY_LOCK) {
-                    CELLS.remove(key, this);
-                }
+            } catch (Throwable cleanupFailure) {
+                // Fail closed. A failed close can mean an OS handle, lock, socket,
+                // or other external resource is in an unknown state. Keep both the
+                // Cell and state strongly rooted and keep collectionRequested=true,
+                // which permanently rejects stale/new calls through this generation.
+                terminalFailure = cleanupFailure;
+                collected.completeExceptionally(cleanupFailure);
+                return;
             }
 
-            if (cleanupFailure == null) collected.complete(null);
-            else collected.completeExceptionally(cleanupFailure);
+            // Unroot only after cleanup succeeds. A later lookup may now create a
+            // fresh generation; stale handles remain invalid because their Cell
+            // retains collectionRequested=true.
+            this.state = null;
+            synchronized (REGISTRY_LOCK) {
+                CELLS.remove(key, this);
+            }
+            collected.complete(null);
         }
 
         private void failTerminal(Throwable failure) {
             terminalFailure = Objects.requireNonNull(failure);
             if (collectionRequested.get()) {
-                synchronized (REGISTRY_LOCK) {
-                    CELLS.remove(key, this);
+                if (!initialized) {
+                    state = null;
+                    synchronized (REGISTRY_LOCK) {
+                        CELLS.remove(key, this);
+                    }
+                    collected.complete(null);
+                } else {
+                    // The worker failed before reaching the collection barrier.
+                    // Preserve the process root rather than pretending teardown
+                    // succeeded against potentially inconsistent live state.
+                    collected.completeExceptionally(failure);
                 }
-                collected.completeExceptionally(failure);
             }
             Request queued;
             while ((queued = mailbox.poll()) != null) {
