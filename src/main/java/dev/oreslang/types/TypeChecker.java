@@ -1390,7 +1390,7 @@ public final class TypeChecker {
                 case "result" -> {
                     if (result == Primitive.VOID) {
                         throw new IllegalArgumentException(
-                                "actor routine spawn has no result value; await spawn.done for completion");
+                                "void actor callable has no result value; await spawn.done for completion");
                     }
                     yield new Named("Future", List.of(result));
                 }
