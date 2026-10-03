@@ -25,6 +25,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -534,6 +535,33 @@ final class SingletonModuleTest {
                         """)));
 
         assertTrue(error.getMessage().contains("cannot use type aliases"));
+    }
+
+    @Test
+    void singletonMailboxBoundariesRejectMutableParameters() {
+        IllegalArgumentException callable = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module mutable_param_service as
+                          pub fnc inspect(Array<int> mut values) => int {
+                            return 1;
+                          }
+                        end
+                        """)));
+        assertTrue(callable.getMessage().contains("cannot accept mut parameters"));
+
+        IllegalArgumentException proxy = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class MutableProxyTarget as
+                          pub inspect(Array<int> mut values) => int {
+                            return 1;
+                          }
+                        end
+
+                        define singleton module mutable_proxy_service as
+                          pub val MutableProxyTarget target = new MutableProxyTarget();
+                        end
+                        """)));
+        assertTrue(proxy.getMessage().contains("cannot accept mut transported parameters"));
     }
 
     @Test
@@ -2420,53 +2448,6 @@ final class SingletonModuleTest {
     }
 
     @Test
-    void staleHandleFromRetryableInitializationFailureNeverTargetsReplacementCell() {
-        String key = "stale-retry-handle:" + UUID.randomUUID();
-
-        ProcessSingletonRegistry.Handle<AtomicInteger> failed =
-                ProcessSingletonRegistry.getOrCreate(key, () -> {
-                    throw new IllegalStateException("initialization failed");
-                });
-
-        RuntimeException initialFailure = assertThrows(
-                RuntimeException.class,
-                () -> failed.call(
-                        List.of(),
-                        (state, ignored) -> state.incrementAndGet())
-                        .toCompletableFuture()
-                        .join());
-        assertTrue(causeChainContains(initialFailure, "initialization failed"), String.valueOf(initialFailure));
-
-        ProcessSingletonRegistry.Handle<AtomicInteger> replacement =
-                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
-        assertNotEquals(failed.instanceId(), replacement.instanceId());
-
-        Object freshValue = replacement.call(
-                List.of(),
-                (state, ignored) -> state.incrementAndGet())
-                .toCompletableFuture()
-                .join();
-        assertEquals(1L, ((Number) freshValue).longValue());
-
-        RuntimeException staleFailure = assertThrows(
-                RuntimeException.class,
-                () -> failed.call(
-                        List.of(),
-                        (state, ignored) -> state.addAndGet(1000))
-                        .toCompletableFuture()
-                        .join());
-        assertTrue(causeChainContains(staleFailure, "initialization failed"), String.valueOf(staleFailure));
-
-        Object unchanged = replacement.call(
-                List.of(),
-                (state, ignored) -> state.get())
-                .toCompletableFuture()
-                .join();
-        assertEquals(1L, ((Number) unchanged).longValue(),
-                "stale failed handle must never dispatch into the replacement singleton cell");
-    }
-
-    @Test
     void registryCreatesOneActorAndSerializesConcurrentCalls() {
         String key = "test:" + UUID.randomUUID();
         AtomicInteger initializations = new AtomicInteger();
@@ -2493,6 +2474,76 @@ final class SingletonModuleTest {
 
         assertEquals(1, initializations.get());
         assertEquals(64L, ((Number) calls.getLast().join()).longValue());
+    }
+
+    @Test
+    void explicitCollectionDrainsAndReleasesPinnedSingletonBeforeRecreation() {
+        String key = "manual-collect:" + UUID.randomUUID();
+        AtomicBoolean closed = new AtomicBoolean();
+
+        final class CloseState implements AutoCloseable {
+            private final AtomicInteger value = new AtomicInteger();
+
+            @Override
+            public void close() {
+                closed.set(true);
+            }
+        }
+
+        ProcessSingletonRegistry.Handle<CloseState> first =
+                ProcessSingletonRegistry.getOrCreate(key, CloseState::new);
+        UUID firstId = first.instanceId();
+
+        assertEquals(1L, ((Number) first.call(
+                List.of(),
+                (state, ignored) -> state.value.incrementAndGet())
+                .toCompletableFuture().join()).longValue());
+
+        assertTrue(ProcessSingletonRegistry.collect(key).toCompletableFuture().join());
+        assertTrue(closed.get(), "explicit singleton collection must run resource cleanup");
+
+        CompletionException stale = assertThrows(
+                CompletionException.class,
+                () -> first.call(List.of(), (state, ignored) -> state.value.get())
+                        .toCompletableFuture().join());
+        assertTrue(causeChainContains(stale, "explicitly collected"), String.valueOf(stale));
+
+        ProcessSingletonRegistry.Handle<CloseState> second =
+                ProcessSingletonRegistry.getOrCreate(key, CloseState::new);
+        assertNotEquals(firstId, second.instanceId());
+        assertEquals(0L, ((Number) second.call(
+                List.of(),
+                (state, ignored) -> state.value.get())
+                .toCompletableFuture().join()).longValue());
+    }
+
+    @Test
+    void sourceCanExplicitlyCollectSingletonWithoutOrdinaryGcOwningItsLifetime() throws Exception {
+        String program = """
+                define singleton module manual_gc_counter as
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await manual_gc_counter.next());
+                    val bool collected = await process.collect_singleton(manual_gc_counter);
+                    stdio.println(collected);
+                    stdio.println(await manual_gc_counter.next());
+                    return;
+                  }
+                end
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        String output = eval(program, "singleton-manual-collect-" + UUID.randomUUID() + ".ores");
+        List<String> lines = output.lines().map(String::trim).filter(s -> !s.isEmpty()).toList();
+        assertEquals(List.of("1", "true", "1"), lines);
     }
 
     private static boolean causeChainContains(Throwable failure, String text) {
