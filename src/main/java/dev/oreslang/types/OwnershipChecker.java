@@ -388,7 +388,6 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.name().equals("ActorRef")) {
                 return switch (member.member()) {
                     case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
-                    case "mailbox" -> new ValueInfo(Ast.TypeRef.simple("ActorMailbox"), ValueKind.MOVE_ONLY, null);
                     default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
                 };
             }
