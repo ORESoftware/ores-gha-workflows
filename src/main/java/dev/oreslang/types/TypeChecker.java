@@ -81,21 +81,32 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectReservedSymbolName(module.name(), "module");
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectReservedSymbolName(fn.name(), fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedSymbolName(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedSymbolName(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedSymbolName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectReservedSymbolName(String name, String kind) {
+        if ("Symbol".equals(name)) {
+            throw new IllegalArgumentException(kind + " name 'Symbol' is reserved for the built-in Symbol type/factory namespace");
         }
     }
 
@@ -2403,6 +2414,9 @@ public final class TypeChecker {
             this.moduleName = moduleName;
         }
         private void define(String name, Type type, Ast.BindingKind kind) {
+            if ("Symbol".equals(name)) {
+                throw new IllegalArgumentException("binding name 'Symbol' is reserved for the built-in Symbol type/factory namespace");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");
         }
         private Binding lookup(String name) {
