@@ -124,6 +124,48 @@ public final class ProcessSingletonRegistry {
     }
 
     /**
+     * Explicitly releases one pinned process singleton.
+     *
+     * Ordinary/automatic GC never calls this. Collection is a lifecycle operation:
+     * new calls are rejected, all calls admitted before the collection request are
+     * drained in mailbox order, optional AutoCloseable cleanup runs, the registry
+     * root is removed, and only then may a later access create a fresh instance.
+     */
+    public static CompletionStage<Boolean> collect(String key) {
+        String normalized = Objects.requireNonNull(key, "key").trim();
+        if (normalized.isEmpty()) throw new IllegalArgumentException("singleton key cannot be blank");
+        if (normalized.length() > MAX_KEY_CHARS) {
+            throw new IllegalArgumentException("singleton key exceeds " + MAX_KEY_CHARS + " characters");
+        }
+        if (normalized.equals(CURRENT_CELL.get())) {
+            throw new IllegalStateException(
+                    "a singleton cannot collect itself while executing: " + diagnosticId(normalized));
+        }
+
+        Cell cell;
+        synchronized (REGISTRY_LOCK) {
+            cell = CELLS.get(normalized);
+            if (cell == null) return CompletableFuture.completedFuture(false);
+            if (cell.terminalFailure != null && !cell.collectionRequested.get()) {
+                cell.collectionRequested.set(true);
+                CELLS.remove(normalized, cell);
+                Object retained = cell.state;
+                cell.state = null;
+                if (retained instanceof AutoCloseable closeable) {
+                    try {
+                        closeable.close();
+                    } catch (Exception cleanupFailure) {
+                        return CompletableFuture.failedFuture(cleanupFailure);
+                    }
+                }
+                cell.collected.complete(null);
+                return CompletableFuture.completedFuture(true);
+            }
+        }
+        return cell.requestCollection().thenApply(ignored -> true);
+    }
+
+    /**
      * The local static backend is truly process-global only while callers share
      * the host runtime heap. Spawned Graal isolates require a host coordinator
      * and a cross-isolate request/reply bridge.
@@ -214,6 +256,11 @@ public final class ProcessSingletonRegistry {
                 throw new IllegalArgumentException("callerWallTime must be positive");
             }
 
+            if (cell.collectionRequested.get()) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "process singleton has been explicitly collected or is being collected: "
+                                + cell.diagnosticId));
+            }
             Throwable terminal = cell.terminalFailure;
             if (terminal != null) return CompletableFuture.failedFuture(terminal);
 
@@ -265,17 +312,25 @@ public final class ProcessSingletonRegistry {
             }
 
             int admissionLimit = Math.min(callerMailboxLimit, MAILBOX_CAPACITY);
-            if (!cell.reserveQueuedSlot(admissionLimit)) {
-                reply.completeExceptionally(new IllegalStateException(
-                        "singleton mailbox limit exceeded for " + cell.diagnosticId
-                                + " (caller limit " + admissionLimit + ")"));
-                return reply;
-            }
-            if (!cell.mailbox.offer(request)) {
-                cell.releaseQueuedSlot();
-                reply.completeExceptionally(new IllegalStateException(
-                        "singleton mailbox process ceiling exceeded for " + cell.diagnosticId));
-                return reply;
+            synchronized (cell.lifecycleLock) {
+                if (cell.collectionRequested.get()) {
+                    reply.completeExceptionally(new IllegalStateException(
+                            "process singleton has been explicitly collected or is being collected: "
+                                    + cell.diagnosticId));
+                    return reply;
+                }
+                if (!cell.reserveQueuedSlot(admissionLimit)) {
+                    reply.completeExceptionally(new IllegalStateException(
+                            "singleton mailbox limit exceeded for " + cell.diagnosticId
+                                    + " (caller limit " + admissionLimit + ")"));
+                    return reply;
+                }
+                if (!cell.mailbox.offer(request)) {
+                    cell.releaseQueuedSlot();
+                    reply.completeExceptionally(new IllegalStateException(
+                            "singleton mailbox process ceiling exceeded for " + cell.diagnosticId));
+                    return reply;
+                }
             }
 
             // Terminal failure can race the pre-enqueue check. If the actor has
@@ -351,6 +406,7 @@ public final class ProcessSingletonRegistry {
         private final ErasedOperation operation;
         private final ReplyFuture reply;
         private final long deadlineNanos;
+        private final boolean collectionBarrier;
         private final AtomicInteger phase = new AtomicInteger(QUEUED);
         private volatile ScheduledFuture<?> timeoutTask;
 
@@ -363,6 +419,19 @@ public final class ProcessSingletonRegistry {
             this.operation = operation;
             this.reply = reply;
             this.deadlineNanos = deadlineNanos;
+            this.collectionBarrier = false;
+        }
+
+        private Request(boolean collectionBarrier) {
+            this.arguments = List.of();
+            this.operation = null;
+            this.reply = new ReplyFuture();
+            this.deadlineNanos = Long.MAX_VALUE;
+            this.collectionBarrier = collectionBarrier;
+        }
+
+        private static Request collectionBarrier() {
+            return new Request(true);
         }
 
         private boolean begin() {
@@ -408,11 +477,22 @@ public final class ProcessSingletonRegistry {
         private final String key;
         private final String diagnosticId;
         private final UUID instanceId = UUID.randomUUID();
-        private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
+        private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY + 1);
         private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean collectionRequested = new AtomicBoolean();
+        private final CompletableFuture<Void> collected = new CompletableFuture<>();
+        private final Object lifecycleLock = new Object();
         private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
+        /**
+         * Strong process root for initialized singleton state.
+         *
+         * This must live on the registry Cell, not only on the worker stack:
+         * terminal worker failure must not silently make process-lifetime state
+         * eligible for ordinary GC. Explicit collection clears this root.
+         */
+        private volatile Object state;
         private volatile Throwable terminalFailure;
         private volatile boolean initialized;
 
@@ -445,6 +525,32 @@ public final class ProcessSingletonRegistry {
             }
         }
 
+        private CompletionStage<Void> requestCollection() {
+            synchronized (lifecycleLock) {
+                if (collectionRequested.get()) return collected;
+                if (terminalFailure != null) {
+                    synchronized (REGISTRY_LOCK) {
+                        CELLS.remove(key, this);
+                    }
+                    collected.completeExceptionally(terminalFailure);
+                    return collected;
+                }
+
+                collectionRequested.set(true);
+
+                // Normal callers are capped at MAILBOX_CAPACITY, while the physical
+                // queue keeps one extra slot reserved for this barrier.
+                queuedRequests.incrementAndGet();
+                if (!mailbox.offer(Request.collectionBarrier())) {
+                    releaseQueuedSlot();
+                    collectionRequested.set(false);
+                    throw new IllegalStateException(
+                            "singleton collection barrier could not be admitted for " + diagnosticId);
+                }
+            }
+            return collected;
+        }
+
         private void ensureStarted() {
             if (!started.compareAndSet(false, true)) return;
             Thread.ofVirtual()
@@ -465,6 +571,7 @@ public final class ProcessSingletonRegistry {
                 checkExecutionBudget();
                 state = Objects.requireNonNull(factory.get(),
                         "singleton state factory returned null for " + diagnosticId);
+                this.state = state;
                 checkExecutionBudget();
                 initialized = true;
             } catch (Throwable failure) {
@@ -487,6 +594,11 @@ public final class ProcessSingletonRegistry {
                 }
 
                 if (!request.begin()) continue;
+                if (request.collectionBarrier) {
+                    request.finish();
+                    completeCollection(state);
+                    return;
+                }
                 if (request.reply.isDone()) {
                     request.finish();
                     continue;
@@ -534,8 +646,34 @@ public final class ProcessSingletonRegistry {
             }
         }
 
+        private void completeCollection(Object state) {
+            Throwable cleanupFailure = null;
+            try {
+                if (state instanceof AutoCloseable closeable) closeable.close();
+            } catch (Throwable failure) {
+                cleanupFailure = failure;
+            } finally {
+                // Clear only after cleanup: cleanup is allowed to observe the
+                // still-live singleton state, but no stale Handle may keep it
+                // rooted after collection completes.
+                this.state = null;
+                synchronized (REGISTRY_LOCK) {
+                    CELLS.remove(key, this);
+                }
+            }
+
+            if (cleanupFailure == null) collected.complete(null);
+            else collected.completeExceptionally(cleanupFailure);
+        }
+
         private void failTerminal(Throwable failure) {
             terminalFailure = Objects.requireNonNull(failure);
+            if (collectionRequested.get()) {
+                synchronized (REGISTRY_LOCK) {
+                    CELLS.remove(key, this);
+                }
+                collected.completeExceptionally(failure);
+            }
             Request queued;
             while ((queued = mailbox.poll()) != null) {
                 releaseQueuedSlot();
