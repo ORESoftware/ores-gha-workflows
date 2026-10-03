@@ -336,7 +336,9 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
-            return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(created.type(),
+                    created.type().name().equals("Symbol") ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
@@ -360,6 +362,15 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr symbolCall
+                && symbolCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (symbolCall.member().equals("local")
+                    || symbolCall.member().equals("process")
+                    || symbolCall.member().equals("stable"))) {
+            for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -754,7 +765,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void" -> true;
+                    "bool","Bool","string","String","Symbol","void" -> true;
             default -> false;
         };
     }
@@ -765,6 +776,7 @@ public final class OwnershipChecker {
         if (value instanceof Double) return Ast.TypeRef.simple("float");
         if (value instanceof String) return Ast.TypeRef.simple("String");
         if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
+        if (value instanceof Ast.Symbol) return Ast.TypeRef.simple("Symbol");
         return Ast.TypeRef.inferred();
     }
 
