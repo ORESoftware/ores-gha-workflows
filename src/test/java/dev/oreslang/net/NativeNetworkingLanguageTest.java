@@ -416,6 +416,7 @@ final class NativeNetworkingLanguageTest {
                 Thread.sleep(20);
             }
         }
-        if (last != null) throw last;\n        throw new IllegalStateException("connect failed without an exception");
+        if (last != null) throw last;
+        throw new IllegalStateException("connect failed without an exception");
     }
 }
