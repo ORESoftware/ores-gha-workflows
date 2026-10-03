@@ -824,6 +824,10 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (match(COLON)) {
+            String name = consume(IDENT, "expected symbol name after ':'").lexeme();
+            return new Ast.LiteralExpr(new Ast.Symbol(name));
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
