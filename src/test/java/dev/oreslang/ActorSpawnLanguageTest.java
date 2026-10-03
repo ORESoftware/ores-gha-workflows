@@ -92,6 +92,38 @@ final class ActorSpawnLanguageTest {
     }
 
     @Test
+    void readyMailboxRetainsSpawnArgumentTupleType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub actor fnc worker(int value, String label) => int {
+                  return value;
+                }
+
+                pub routine main() => void {
+                  val pending = spawn worker(1, "first");
+                  val ready = await pending;
+                  ready.mailbox.send((2, "second"));
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub actor fnc worker(int value, String label) => int {
+                          return value;
+                        }
+
+                        pub routine main() => void {
+                          val pending = spawn worker(1, "first");
+                          val ready = await pending;
+                          ready.mailbox.send(("wrong", 2));
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("argument"));
+    }
+
+    @Test
     void spawnReturnsImmediatelyAndResultIsAwaitedSeparately() throws Exception {
         String program = """
                 pub actor fnc add_one(int value) => int {
