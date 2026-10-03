@@ -1061,13 +1061,13 @@ public final class TypeChecker {
                     handle);
             case "accept" -> new Function(List.of(borrowedHandle), handle);
             case "read" -> new Function(
-                    List.of(borrowedHandle, bytes, Primitive.INT, Primitive.INT),
+                    List.of(borrowedHandle, new Borrow(bytes, true), Primitive.INT, Primitive.INT),
                     Primitive.INT);
             case "read_some" -> new Function(
                     List.of(borrowedHandle, Primitive.INT),
                     bytes);
             case "write" -> new Function(
-                    List.of(borrowedHandle, bytes, Primitive.INT, Primitive.INT),
+                    List.of(borrowedHandle, new Borrow(bytes, false), Primitive.INT, Primitive.INT),
                     Primitive.INT);
             case "shutdown_input", "shutdown_output" ->
                     new Function(List.of(borrowedHandle), Primitive.VOID);
