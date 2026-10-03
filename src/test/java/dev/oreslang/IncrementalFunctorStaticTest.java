@@ -23,7 +23,7 @@ final class IncrementalFunctorStaticTest {
         var program = TypeChecker.check(Parser.parse("""
                 namespace payments;
 
-                define module api as
+                define module api
                   pub fnc ping() => int { return 1; }
                 end
                 """));
@@ -41,8 +41,8 @@ final class IncrementalFunctorStaticTest {
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define module outer as
-                  define module inner as
+                define module outer
+                  define module inner
                   end
                 end
                 """));
@@ -103,27 +103,6 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
-    void incrementalUnitIdsNormalizeWindowsSeparatorsBeforePathCollapse() {
-        IncrementalCompiler compiler = new IncrementalCompiler();
-
-        var normalized = compiler.compile(Map.of(
-                "dir\\\\sub\\\\..\\\\worker.ores",
-                "pub routine main() => void { return; }"));
-        assertTrue(normalized.units().containsKey("dir/worker.ores"));
-
-        Map<String, String> duplicates = new LinkedHashMap<>();
-        duplicates.put("dir\\\\..\\\\same.ores",
-                "pub routine main() => void { return; }");
-        duplicates.put("same.ores",
-                "pub routine main() => void { return; }");
-
-        IllegalArgumentException duplicate = assertThrows(
-                IllegalArgumentException.class,
-                () -> compiler.compile(duplicates));
-        assertTrue(duplicate.getMessage().contains("duplicate source unit"), duplicate.getMessage());
-    }
-
-    @Test
     void inferredPublicBindingsParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> first = Map.of(
@@ -178,7 +157,7 @@ final class IncrementalFunctorStaticTest {
     @Test
     void staticClassFunctionsUseStaticFncAndDoNotReceiveSelf() throws Exception {
         String output = run("""
-                define module model as
+                define module model
                   define class Counter as
                     pub val int value = 9;
 

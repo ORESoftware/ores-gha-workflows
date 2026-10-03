@@ -11,56 +11,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class PolyglotFeatureTest {
     @Test
-    void ordinaryModuleInitRunsOnceAcrossRepeatedExecutionInOneContext() throws Exception {
-        String program = """
-                define module local_state as
-                  let int count = 0;
-
-                  init routine() => void {
-                    count = count + 10;
-                    return;
-                  }
-
-                  pub fnc next() => int {
-                    count = count + 1;
-                    return count;
-                  }
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(local_state.next());
-                    return;
-                  }
-                end
-                """;
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "context-init-once.ores")
-                .mimeType(OresLanguage.MIME_TYPE)
-                .build();
-
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .out(output)
-                .build()) {
-            context.eval(source);
-            context.eval(source);
-        }
-
-        String text = output.toString(StandardCharsets.UTF_8);
-        assertTrue(text.contains("11"), text);
-        assertTrue(text.contains("12"), text);
-    }
-
-    @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
-                define module math as
+                define module math
                   pub fnc add(int a, int b) => int { return a + b; }
                 end
 
-                define module model as
+                define module model
                   define class A as
                     pub value() => int { return 7; }
                   end
@@ -68,7 +25,7 @@ final class PolyglotFeatureTest {
                   end
                 end
 
-                define module app as
+                define module app
                   pub fnc main() => void {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
@@ -99,4 +56,34 @@ final class PolyglotFeatureTest {
         assertTrue(text.contains("7"));
         assertTrue(text.contains("ores"));
     }
+
+@Test
+    void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    [const foo, _, let bar] = (1, 200, 3);
+                    [const z, _, let y] = (4, 500, 6);
+                    [_, _, const tail] = (700, 800, 9);
+                    stdio.println(foo + bar + z + y + tail);
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "destructure-discard.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("23"));
+    }
+
 }

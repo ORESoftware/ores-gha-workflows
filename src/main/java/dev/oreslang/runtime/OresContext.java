@@ -1,20 +1,20 @@
 package dev.oreslang.runtime;
 
+import com.oracle.truffle.api.TruffleContext;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
+import dev.oreslang.gpu.GpuRuntime;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Supplier;
+import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
@@ -24,15 +24,14 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final ActorRuntime actors;
+    private final GpuRuntime gpu;
+    private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
-    private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
-    private final boolean graalIsolated;
-    private final long codeGeneration;
-    private final Map<Object, Object> contextLocals = new ConcurrentHashMap<>();
-    private final Set<Object> initializingContextLocals = ConcurrentHashMap.newKeySet();
+    private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    private final Map<String, Object> linkedCodeUnits = new HashMap<>();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -41,9 +40,13 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        this.graalIsolated = IsolatePolicy.graalIsolatedFromApplicationArguments(env.getApplicationArguments());
-        this.codeGeneration = codeGenerationFromApplicationArguments(env.getApplicationArguments());
-        this.actors = new ActorRuntime(isolatePolicy);
+        this.actors = new ActorRuntime(
+                isolatePolicy,
+                ActorRuntime.DispatcherConfig.defaults(),
+                this::executeActorTurn);
+        this.gpu = new GpuRuntime();
+        this.garbageCollector = new RuntimeGarbageCollector();
+        this.actors.setActorExitHook(garbageCollector::retireActorDomain);
     }
 
     public static OresContext get(Node node) {
@@ -55,54 +58,47 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public GpuRuntime gpu() { return gpu; }
+    public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
-    public boolean graalIsolated() { return graalIsolated; }
-    public long codeGeneration() { return codeGeneration; }
 
-    public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        requireOpen();
-        isolatePolicy.require(capability, api);
-    }
-
-    private void requireOpen() {
-        if (closed.get()) throw new ExecutionTerminated("Oreslang context is closing");
-    }
-
-    /**
-     * Lifetime-scoped storage for ordinary module/file state executing outside
-     * an Ores actor. Actor executions use ActorRuntime.currentActorLocal()
-     * instead, so actor state never aliases this context state.
-     */
-    @SuppressWarnings("unchecked")
-    public <T> T contextLocal(Object key, Supplier<? extends T> initializer) {
-        requireOpen();
-        java.util.Objects.requireNonNull(key, "key");
-        java.util.Objects.requireNonNull(initializer, "initializer");
-
-        Object existing = contextLocals.get(key);
-        if (existing != null) return (T) existing;
-        if (!initializingContextLocals.add(key)) {
-            throw new IllegalStateException("context-local initialization cycle for "
-                    + key.getClass().getSimpleName() + "#"
-                    + Integer.toUnsignedString(key.hashCode(), 16));
+    public Object lookupHostSymbol(String className) {
+        requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
+        if (!env.isHostLookupAllowed()) {
+            throw new SecurityException("Java host class lookup is disabled by the embedding Context");
         }
         try {
-            // ContextPolicy.EXCLUSIVE gives guest execution one owning context,
-            // but compute under the explicit lifecycle guard for clear cycle
-            // diagnostics and future scheduler changes.
-            existing = contextLocals.get(key);
-            if (existing != null) return (T) existing;
-            T value = java.util.Objects.requireNonNull(
-                    initializer.get(), "context-local initializer returned null for "
-                            + key.getClass().getSimpleName() + "#"
-                            + Integer.toUnsignedString(key.hashCode(), 16));
-            Object raced = contextLocals.putIfAbsent(key, value);
-            return raced == null ? value : (T) raced;
-        } finally {
-            initializingContextLocals.remove(key);
+            return env.lookupHostSymbol(className);
+        } catch (RuntimeException failure) {
+            throw new IllegalArgumentException(
+                    "Java host class is not allowlisted or unavailable: " + className,
+                    failure);
         }
+    }
+
+    public void requireCapability(IsolatePolicy.Capability capability, String api) {
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null && ActorRuntime.currentActorRuntime() != actors) {
+            throw new SecurityException(
+                    "actor capability check crossed ActorRuntime boundary for " + api);
+        }
+        requireEffectiveCapability(isolatePolicy, capability, api);
+    }
+
+    static void requireEffectiveCapability(
+            IsolatePolicy contextPolicy,
+            IsolatePolicy.Capability capability,
+            String api) {
+        // Actor turns execute inside the parent Truffle context, but they may
+        // have a strictly narrower capability set than that context. Always
+        // enforce the actor-local policy first so helper functions, imported
+        // code, and ordinary class methods cannot launder authority from the
+        // parent context into a private actor.
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null) actorPolicy.require(capability, api);
+        contextPolicy.require(capability, api);
     }
 
     /**
@@ -111,23 +107,51 @@ public final class OresContext implements AutoCloseable {
      * long-running actor code without requiring recursion-only looping.
      */
     public void schedulerSafepoint() {
-        requireOpen();
         schedulerSafepoints.incrementAndGet();
-        ProcessSingletonRegistry.checkExecutionBudget();
         actors.schedulerSafepoint();
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
-    private static long codeGenerationFromApplicationArguments(String[] args) {
-        for (String arg : args) {
-            if (!arg.startsWith("--ores-code-generation=")) continue;
-            long generation = Long.parseLong(arg.substring("--ores-code-generation=".length()));
-            if (generation < 0) throw new IllegalArgumentException("ores code generation cannot be negative");
-            return generation;
+    /**
+     * Host-managed cross-file link registry. Guest imports may only observe
+     * units that the host has explicitly loaded into this context; import
+     * syntax never grants filesystem access.
+     */
+    public synchronized void registerLinkedCodeUnit(String codeUnitId, Object unit) {
+        if (codeUnitId == null || codeUnitId.isBlank()) {
+            throw new IllegalArgumentException("linked code unit id cannot be blank");
         }
-        return 0L;
+        Object previous = linkedCodeUnits.putIfAbsent(codeUnitId, unit);
+        if (previous != null && previous != unit) {
+            throw new IllegalStateException("code unit already linked in this context: " + codeUnitId);
+        }
     }
+
+    public synchronized Object linkedCodeUnit(String codeUnitId) {
+        return linkedCodeUnits.get(codeUnitId);
+    }
+
+    public synchronized boolean hasLinkedCodeUnit(String codeUnitId) {
+        return linkedCodeUnits.containsKey(codeUnitId);
+    }
+
+    private void executeActorTurn(Runnable turn) {
+        boolean serialize = isolatePolicy.adversarial();
+        if (serialize) adversarialActorTurnLock.lock();
+        TruffleContext truffleContext = env.getContext();
+        Object previous = null;
+        boolean entered = false;
+        try {
+            previous = truffleContext.enter(null);
+            entered = true;
+            turn.run();
+        } finally {
+            if (entered) truffleContext.leave(null, previous);
+            if (serialize) adversarialActorTurnLock.unlock();
+        }
+    }
+
 
     public Map<String, Object> processDescriptor() {
         return Map.of(
@@ -136,16 +160,21 @@ public final class OresContext implements AutoCloseable {
                 "language", "oreslang",
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
-                "graal_isolated", graalIsolated,
+                "gpu_available", gpu.available(),
+                "gpu_backend", gpu.backendName(),
                 "scheduler_safepoints", schedulerSafepoints.get());
     }
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        actors.close();
-        contextLocals.clear();
-        initializingContextLocals.clear();
-        output.flush();
+        try {
+            actors.close();
+        } finally {
+            synchronized (this) {
+                linkedCodeUnits.clear();
+            }
+            garbageCollector.close();
+            output.flush();
+        }
     }
 }

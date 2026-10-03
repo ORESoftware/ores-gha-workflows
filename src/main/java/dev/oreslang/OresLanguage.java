@@ -7,14 +7,12 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresContext;
 import org.graalvm.polyglot.SandboxPolicy;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
@@ -34,6 +32,25 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         return new OresContext(this, env);
     }
 
+    /**
+     * Host-owned actor dispatcher workers may enter the context. Guest source
+     * still has no raw thread-creation authority; that remains controlled by
+     * IsolatePolicy and the Polyglot Context builder.
+     *
+     * Strict/adversarial contexts serialize actor guest turns in OresContext.
+     * Non-adversarial contexts may execute independent actor turns concurrently.
+     */
+    @Override
+    protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
+        return singleThreaded || ActorRuntime.isActorCarrierThread();
+    }
+
+    @Override
+    protected void initializeMultiThreading(OresContext context) {
+        // All mutable language state used by actor turns is context-owned,
+        // actor-owned, immutable, or explicitly synchronized.
+    }
+
     @Override
     protected void disposeContext(OresContext context) {
         context.close();
@@ -45,64 +62,17 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         String text = source.getCharacters().toString();
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
-        if (codeUnitId != null && !codeUnitId.isBlank()) {
-            codeUnitId = normalizePathIdentity(codeUnitId);
-        } else if (source.getURI() != null
-                && "file".equalsIgnoreCase(source.getURI().getScheme())) {
-            try {
-                codeUnitId = Path.of(source.getURI())
-                        .toAbsolutePath()
-                        .normalize()
-                        .toString()
-                        .replace('\\', '/');
-            } catch (RuntimeException invalidPath) {
-                throw new IllegalArgumentException("invalid Oreslang source URI identity", invalidPath);
-            }
+        if (codeUnitId == null || codeUnitId.isBlank()) {
+            codeUnitId = source.getName();
         } else {
-            codeUnitId = normalizeLogicalIdentity(source.getName());
+            try {
+                codeUnitId = Path.of(codeUnitId).toAbsolutePath().normalize().toString().replace('\\', '/');
+            } catch (InvalidPathException invalidPath) {
+                throw new IllegalArgumentException("invalid Oreslang source path identity", invalidPath);
+            }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
-        RootCallTarget evaluator = new OresEvalRootNode(
-                this,
-                program,
-                codeUnitId,
-                sourceDigest(text)).getCallTarget();
+        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
-    }
-
-    private static String normalizeLogicalIdentity(String name) {
-        if (name == null || name.isBlank()) return name;
-        try {
-            String normalized = Path.of(name.replace('\\', '/'))
-                    .normalize()
-                    .toString()
-                    .replace('\\', '/');
-            return normalized.isBlank() ? name : normalized;
-        } catch (InvalidPathException invalidPath) {
-            // Source names may be logical labels rather than filesystem paths.
-            return name;
-        }
-    }
-
-    private static String normalizePathIdentity(String path) {
-        try {
-            return Path.of(path.replace('\\', '/'))
-                    .toAbsolutePath()
-                    .normalize()
-                    .toString()
-                    .replace('\\', '/');
-        } catch (InvalidPathException invalidPath) {
-            throw new IllegalArgumentException("invalid Oreslang source path identity", invalidPath);
-        }
-    }
-
-    private static String sourceDigest(String source) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(source.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
-        } catch (Exception impossible) {
-            throw new IllegalStateException(impossible);
-        }
     }
 }

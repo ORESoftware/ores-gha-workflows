@@ -10,6 +10,10 @@ import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -29,13 +33,17 @@ public record IsolatePolicy(
         STDIN,
         STDOUT,
         PROCESS_INFO,
-        PROCESS_SINGLETON,
+        GC_CONTROL,
         ACTOR_SHARE_READONLY,
+        SHARED_MEMORY,
         NETWORK,
         FILESYSTEM_READ,
         FILESYSTEM_WRITE,
         ENVIRONMENT,
         HOT_CODE_LOAD,
+        GPU,
+        JAVA_INTEROP,
+        JAVA_SOURCE_INTEROP,
         FFI,
         NATIVE,
         REFLECTION,
@@ -56,9 +64,11 @@ public record IsolatePolicy(
         if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
         }
-        if (adversarial && capabilities.contains(Capability.PROCESS_SINGLETON)) {
-            throw new IllegalArgumentException("adversarial Graal isolates cannot grant PROCESS_SINGLETON until"
-                    + " a trusted host/supervisor process-singleton coordinator is installed");
+        if (adversarial && capabilities.contains(Capability.JAVA_INTEROP)) {
+            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_INTEROP");
+        }
+        if (adversarial && capabilities.contains(Capability.JAVA_SOURCE_INTEROP)) {
+            throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_SOURCE_INTEROP");
         }
     }
 
@@ -70,11 +80,11 @@ public record IsolatePolicy(
         return new IsolatePolicy(Set.of(Capability.STDOUT), 128L * 1024 * 1024, 1024, Duration.ofSeconds(30), true);
     }
 
-    /** Restricted local/test baseline. FFI/native/reflection/process spawning remain denied. */
+    /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
-                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
-                        Capability.PROCESS_SINGLETON, Capability.ACTOR_SHARE_READONLY, Capability.HOT_CODE_LOAD),
+                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.GC_CONTROL,
+                        Capability.ACTOR_SHARE_READONLY, Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
@@ -83,6 +93,14 @@ public record IsolatePolicy(
                 ? EnumSet.noneOf(Capability.class)
                 : EnumSet.copyOf(capabilities);
         next.addAll(Arrays.asList(added));
+        return new IsolatePolicy(next, maxHeapBytes, maxMailboxMessages, maxWallTime, adversarial);
+    }
+
+    public IsolatePolicy withoutCapabilities(Capability... removed) {
+        EnumSet<Capability> next = capabilities.isEmpty()
+                ? EnumSet.noneOf(Capability.class)
+                : EnumSet.copyOf(capabilities);
+        next.removeAll(Arrays.asList(removed));
         return new IsolatePolicy(next, maxHeapBytes, maxMailboxMessages, maxWallTime, adversarial);
     }
 
@@ -99,21 +117,42 @@ public record IsolatePolicy(
      * available and enforces guest/isolate resource limits.
      */
     public Context.Builder restrictedContextBuilder() {
-        return restrictedContextBuilder(ExecutionProfile.serverJit());
+        return restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of());
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
-        return restrictedContextBuilder(profile, new String[0]);
+        return restrictedContextBuilder(profile, Set.of());
     }
 
-    public Context.Builder restrictedContextBuilder(ExecutionProfile profile, String... extraArguments) {
-        validateTrustedExtraArguments(extraArguments);
-        HostAccess hostAccess = adversarial
-                ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
-                : HostAccess.NONE;
+    /**
+     * Builds a deny-by-default Graal context. Java host classes require two
+     * independent grants: JAVA_INTEROP and this exact fully-qualified allowlist.
+     */
+    public Context.Builder restrictedContextBuilder(
+            ExecutionProfile profile,
+            Set<String> allowedHostClasses) {
+        Set<String> hostClasses = Set.copyOf(allowedHostClasses);
+        if (!hostClasses.isEmpty()) {
+            require(Capability.JAVA_INTEROP, "Java host imports");
+            if (adversarial) {
+                throw new SecurityException("Java host imports are disabled for adversarial isolates");
+            }
+            for (String className : hostClasses) validateHostClassAuthority(className);
+        }
+
+        HostAccess hostAccess;
+        if (!hostClasses.isEmpty()) {
+            hostAccess = explicitHostAccess(hostClasses);
+        } else {
+            hostAccess = adversarial
+                    ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
+                    : HostAccess.NONE;
+        }
 
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
                 .allowHostAccess(hostAccess)
+                .allowHostClassLookup(hostClasses.isEmpty() ? ignored -> false : hostClasses::contains)
+                .allowHostClassLoading(false)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
@@ -122,7 +161,7 @@ public record IsolatePolicy(
                 .in(new ByteArrayInputStream(new byte[0]))
                 .out(new ByteArrayOutputStream())
                 .err(new ByteArrayOutputStream())
-                .arguments(OresLanguage.ID, applicationArguments(profile, extraArguments));
+                .arguments(OresLanguage.ID, applicationArguments(profile));
 
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
@@ -151,36 +190,84 @@ public record IsolatePolicy(
         return builder;
     }
 
-    private static void validateTrustedExtraArguments(String[] extraArguments) {
-        if (extraArguments == null) return;
-        boolean generationSeen = false;
-        for (String argument : extraArguments) {
-            if (argument == null) {
-                throw new IllegalArgumentException("extra Oreslang context argument cannot be null");
-            }
-            if (!argument.startsWith("--ores-")) continue;
-
-            if (argument.startsWith("--ores-code-generation=")) {
-                if (generationSeen) {
-                    throw new IllegalArgumentException("duplicate --ores-code-generation context metadata");
-                }
-                long generation;
-                try {
-                    generation = Long.parseLong(argument.substring("--ores-code-generation=".length()));
-                } catch (NumberFormatException invalid) {
-                    throw new IllegalArgumentException("invalid --ores-code-generation context metadata", invalid);
-                }
-                if (generation < 0) {
-                    throw new IllegalArgumentException("ores code generation cannot be negative");
-                }
-                generationSeen = true;
-                continue;
-            }
-
-            throw new IllegalArgumentException(
-                    "reserved Oreslang policy argument cannot be overridden through extra context arguments: "
-                            + argument.substring(0, argument.indexOf('=') >= 0 ? argument.indexOf('=') : argument.length()));
+    private void validateHostClassAuthority(String className) {
+        if (className == null || className.isBlank()) {
+            throw new IllegalArgumentException("allowlisted Java host class name cannot be blank");
         }
+
+        if (className.equals("java.lang.Class")
+                || className.equals("java.lang.ClassLoader")
+                || className.equals("java.lang.Module")
+                || className.equals("java.lang.Runtime")
+                || className.equals("java.lang.System")
+                || className.equals("java.lang.Process")
+                || className.equals("java.lang.ProcessBuilder")
+                || className.equals("java.lang.ProcessHandle")
+                || className.equals("java.lang.Thread")
+                || className.equals("java.lang.ThreadGroup")
+                || className.equals("java.lang.SecurityManager")
+                || className.equals("java.util.ServiceLoader")
+                || className.startsWith("java.lang.reflect.")
+                || className.startsWith("java.lang.invoke.")
+                || className.startsWith("java.beans.")
+                || className.startsWith("javax.script.")
+                || className.startsWith("javax.tools.")
+                || className.startsWith("jdk.")
+                || className.startsWith("sun.")
+                || className.startsWith("com.sun.")) {
+            throw new SecurityException("Java host class is blocked from class-level interop: " + className);
+        }
+
+        if (className.startsWith("java.io.") || className.startsWith("java.nio.file.")) {
+            require(Capability.FILESYSTEM_READ, "Java host class " + className);
+            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
+        }
+        if (className.startsWith("java.net.")) {
+            require(Capability.NETWORK, "Java host class " + className);
+        }
+        if (className.startsWith("java.nio.channels.")) {
+            require(Capability.NETWORK, "Java host class " + className);
+            require(Capability.FILESYSTEM_READ, "Java host class " + className);
+            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
+        }
+        if (className.startsWith("java.util.concurrent.")) {
+            require(Capability.THREAD_CREATE, "Java host class " + className);
+        }
+        if (className.startsWith("java.lang.foreign.")) {
+            require(Capability.NATIVE, "Java host class " + className);
+        }
+        if (className.startsWith("java.lang.management.")) {
+            require(Capability.PROCESS_INFO, "Java host class " + className);
+        }
+    }
+
+    private static HostAccess explicitHostAccess(Set<String> hostClasses) {
+        HostAccess.Builder access = HostAccess.newBuilder(HostAccess.NONE)
+                .allowAccessInheritance(false);
+        ClassLoader loader = Thread.currentThread().getContextClassLoader();
+
+        for (String className : hostClasses) {
+            final Class<?> type;
+            try {
+                type = Class.forName(className, false, loader);
+            } catch (ClassNotFoundException failure) {
+                throw new IllegalArgumentException("allowlisted Java host class is unavailable: " + className, failure);
+            }
+            if (!Modifier.isPublic(type.getModifiers())) {
+                throw new IllegalArgumentException("allowlisted Java host class must be public: " + className);
+            }
+
+            for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                if (Modifier.isPublic(constructor.getModifiers())) access.allowAccess(constructor);
+            }
+            for (Method method : type.getDeclaredMethods()) {
+                if (Modifier.isPublic(method.getModifiers())) access.allowAccess(method);
+            }
+            for (Field field : type.getDeclaredFields()) {
+                if (Modifier.isPublic(field.getModifiers())) access.allowAccess(field);
+            }
+        }
+        return access.build();
     }
 
     public boolean allows(Capability capability) {
@@ -194,25 +281,16 @@ public record IsolatePolicy(
     }
 
     public String[] applicationArguments(ExecutionProfile profile) {
-        return applicationArguments(profile, new String[0]);
-    }
-
-    public String[] applicationArguments(ExecutionProfile profile, String... extraArguments) {
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
-        String[] base = new String[] {
+        return new String[] {
                 "--ores-capabilities=" + caps,
                 "--ores-max-heap-bytes=" + maxHeapBytes,
                 "--ores-max-mailbox-messages=" + maxMailboxMessages,
                 "--ores-max-wall-ms=" + maxWallTime.toMillis(),
                 "--ores-adversarial=" + adversarial,
-                "--ores-graal-isolated=" + adversarial,
                 "--ores-execution-mode=" + profile.mode().name(),
                 "--ores-platform=" + profile.platform().name()
         };
-        if (extraArguments == null || extraArguments.length == 0) return base;
-        String[] combined = java.util.Arrays.copyOf(base, base.length + extraArguments.length);
-        System.arraycopy(extraArguments, 0, combined, base.length, extraArguments.length);
-        return combined;
     }
 
     public static IsolatePolicy fromApplicationArguments(String[] args) {
@@ -234,15 +312,6 @@ public record IsolatePolicy(
             for (String value : raw.split(",")) caps.add(Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
         }
         return new IsolatePolicy(caps, maxHeap, maxMailbox, Duration.ofMillis(maxWallMs), adversarial);
-    }
-
-    public static boolean graalIsolatedFromApplicationArguments(String[] args) {
-        for (String arg : args) {
-            if (arg.startsWith("--ores-graal-isolated=")) {
-                return Boolean.parseBoolean(arg.substring("--ores-graal-isolated=".length()));
-            }
-        }
-        return false;
     }
 
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
