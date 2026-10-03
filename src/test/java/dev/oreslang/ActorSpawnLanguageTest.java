@@ -88,20 +88,21 @@ final class ActorSpawnLanguageTest {
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("routine spawn has no result"));
+        assertTrue(failure.getMessage().contains("void actor callable has no result"));
     }
 
     @Test
-    void readyMailboxRetainsSpawnArgumentTupleType() {
+    void readyRefIsIdentityControlOnlyForOneShotCallable() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub actor fnc worker(int value, String label) => int {
+                pub actor fnc worker(int value) => int {
                   return value;
                 }
 
                 pub routine main() => void {
-                  val pending = spawn worker(1, "first");
+                  val pending = spawn worker(1);
                   val ready = await pending;
-                  ready.mailbox.send((2, "second"));
+                  val id = ready.id;
+                  val alive = ready.is_alive();
                   return;
                 }
                 """)));
@@ -109,18 +110,17 @@ final class ActorSpawnLanguageTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub actor fnc worker(int value, String label) => int {
+                        pub actor fnc worker(int value) => int {
                           return value;
                         }
 
                         pub routine main() => void {
-                          val pending = spawn worker(1, "first");
-                          val ready = await pending;
-                          ready.mailbox.send(("wrong", 2));
+                          val ready = await spawn worker(1);
+                          val denied = ready.mailbox;
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("argument"));
+        assertTrue(failure.getMessage().contains("not an application mailbox"));
     }
 
     @Test
