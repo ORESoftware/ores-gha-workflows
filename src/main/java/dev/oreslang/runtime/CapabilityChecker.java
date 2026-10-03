@@ -60,7 +60,9 @@ public final class CapabilityChecker {
     }
 
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
+        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Ast.Symbol) {
+            requireTrustedSymbols(policy, "symbol literal");
+        } else if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
         else if (expr instanceof Ast.CallExpr c) {
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
@@ -70,6 +72,8 @@ public final class CapabilityChecker {
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
+                if (path.startsWith("process.collect_singleton")) require(policy, IsolatePolicy.Capability.PROCESS_SINGLETON, path);
+                if (path.startsWith("Symbol.")) requireTrustedSymbols(policy, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
@@ -85,7 +89,10 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
-        else if (expr instanceof Ast.NewExpr e) for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+        else if (expr instanceof Ast.NewExpr e) {
+            if (e.type().name().equals("Symbol")) requireTrustedSymbols(policy, "new Symbol");
+            for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+        }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
@@ -103,6 +110,12 @@ public final class CapabilityChecker {
             return parent == null ? null : parent + "." + m.member();
         }
         return null;
+    }
+
+    private static void requireTrustedSymbols(IsolatePolicy policy, String api) {
+        if (policy.adversarial()) {
+            throw new SecurityException("Oreslang untrusted isolate denies process-wide symbols required by " + api);
+        }
     }
 
     private static void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
