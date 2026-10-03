@@ -215,6 +215,11 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
         Object frozen = freezeForThisRuntime(message);
+        if (cell.policy.adversarial()) {
+            // Inspect only the already-bounded frozen graph so an attempted
+            // untrusted send cannot bypass normal message depth/node/size limits.
+            rejectProcessSymbols(frozen, new IdentityHashMap<>(), 0);
+        }
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -278,6 +283,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof String text) {
             budget.addBytes(16L + 2L * text.length());
+            return value;
+        }
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.sendable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot cross actor boundaries");
+            }
+            budget.addBytes(48L + 2L * symbol.key().length());
             return value;
         }
         if (value instanceof BigInteger integer) {
@@ -409,7 +422,8 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Enum<?>
                 || value instanceof UUID
                 || value instanceof ActorId
-                || value instanceof OresValues.Complex) {
+                || value instanceof OresValues.Complex
+                || value instanceof OresSymbol) {
             return value;
         }
         if (value instanceof OresValues.OptionValue option) {
@@ -458,6 +472,58 @@ public final class ActorRuntime implements AutoCloseable {
     private static void enterComposite(Object value, IdentityHashMap<Object, Boolean> path) {
         if (path.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic actor message graphs are not Sendable");
+        }
+    }
+
+    /**
+     * Untrusted actors are a separate identity/security domain. They may receive
+     * validated string/enum representations of symbol keys, but never a live
+     * Symbol value from any trusted domain, including when nested in an otherwise
+     * Sendable graph.
+     */
+    private static void rejectProcessSymbols(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen,
+            int depth) {
+        if (value == null) return;
+        if (value instanceof OresSymbol) {
+            throw new SecurityException(
+                    "Symbol values cannot cross into an adversarial/untrusted actor");
+        }
+        if (depth > MAX_FREEZE_DEPTH) return;
+        if (value instanceof String
+                || value instanceof Number
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Enum<?>
+                || value instanceof UUID
+                || value instanceof ActorId
+                || value instanceof OresValues.Complex) {
+            return;
+        }
+        if (seen.put(value, Boolean.TRUE) != null) return;
+        try {
+            if (value instanceof OresValues.OptionValue option) {
+                if (option.present()) rejectProcessSymbols(option.value(), seen, depth + 1);
+            } else if (value instanceof Shared<?> shared) {
+                rejectProcessSymbols(shared.value(), seen, depth + 1);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) rejectProcessSymbols(item, seen, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectProcessSymbols(item, seen, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectProcessSymbols(entry.getKey(), seen, depth + 1);
+                    rejectProcessSymbols(entry.getValue(), seen, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    rejectProcessSymbols(Array.get(value, i), seen, depth + 1);
+                }
+            }
+        } finally {
+            seen.remove(value);
         }
     }
 
