@@ -51,6 +51,42 @@ static int validate_port(JNIEnv *env, jint port) {
     return 1;
 }
 
+/*
+ * Every native socket is non-inheritable and protected against process-wide
+ * SIGPIPE termination where the platform exposes SO_NOSIGPIPE.
+ */
+static int configure_socket_safety(int fd) {
+    int descriptor_flags = fcntl(fd, F_GETFD, 0);
+    if (descriptor_flags < 0) return -1;
+    if (fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) return -1;
+
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) < 0) return -1;
+#endif
+    return 0;
+}
+
+static int create_stream_socket(int family, int type, int protocol) {
+#ifdef SOCK_CLOEXEC
+    int fd = socket(family, type | SOCK_CLOEXEC, protocol);
+    if (fd < 0 && errno == EINVAL) {
+        fd = socket(family, type, protocol);
+    }
+#else
+    int fd = socket(family, type, protocol);
+#endif
+    if (fd < 0) return -1;
+
+    if (configure_socket_safety(fd) < 0) {
+        int saved = errno;
+        (void)close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
 static int connect_one(int fd, const struct sockaddr *address, socklen_t length, jint timeout_ms) {
     if (timeout_ms <= 0) {
         while (connect(fd, address, length) < 0) {
@@ -66,7 +102,7 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
 
     int result = connect(fd, address, length);
     if (result == 0) {
-        (void)fcntl(fd, F_SETFL, original_flags);
+        if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
         return 0;
     }
     if (errno != EINPROGRESS) {
@@ -106,11 +142,12 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
         return -1;
     }
 
-    (void)fcntl(fd, F_SETFL, original_flags);
     if (socket_error != 0) {
+        (void)fcntl(fd, F_SETFL, original_flags);
         errno = socket_error;
         return -1;
     }
+    if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
     return 0;
 }
 
@@ -150,7 +187,7 @@ Java_dev_oreslang_net_NativeSocketBridge_connect(
     int fd = -1;
     int last_error = ECONNREFUSED;
     for (struct addrinfo *it = addresses; it != NULL; it = it->ai_next) {
-        fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        fd = create_stream_socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             last_error = errno;
             continue;
@@ -212,7 +249,7 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
     int fd = -1;
     int last_error = EADDRNOTAVAIL;
     for (struct addrinfo *it = addresses; it != NULL; it = it->ai_next) {
-        fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        fd = create_stream_socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             last_error = errno;
             continue;
@@ -259,6 +296,13 @@ Java_dev_oreslang_net_NativeSocketBridge_accept(JNIEnv *env, jclass cls, jlong r
 
     if (accepted < 0) {
         throw_errno(env, "accept");
+        return -1;
+    }
+    if (configure_socket_safety(accepted) < 0) {
+        int saved = errno;
+        (void)close(accepted);
+        errno = saved;
+        throw_errno(env, "accept socket safety");
         return -1;
     }
     return (jlong)accepted;
@@ -376,10 +420,15 @@ Java_dev_oreslang_net_NativeSocketBridge_close(JNIEnv *env, jclass cls, jlong ra
     (void)cls;
     int fd = as_fd(raw_fd);
     if (fd < 0) return;
-    while (close(fd) < 0) {
-        if (errno == EINTR) continue;
+    /*
+     * POSIX permits close(2) to report EINTR after the descriptor has already
+     * been released. Retrying can therefore close an unrelated descriptor
+     * that another thread acquired in the meantime. The Oreslang handle is
+     * consumed exactly once; EINTR is treated as an indeterminate close, not
+     * retried.
+     */
+    if (close(fd) < 0 && errno != EINTR) {
         throw_errno(env, "close");
-        return;
     }
 }
 
@@ -515,12 +564,23 @@ Java_dev_oreslang_net_NativeSocketBridge_resolveAll(
     return result;
 }
 
+static int require_fd(JNIEnv *env, jlong raw_fd, const char *operation) {
+    int fd = as_fd(raw_fd);
+    if (fd < 0) {
+        throw_errno(env, operation);
+        return -1;
+    }
+    return fd;
+}
+
 static void set_bool_option(JNIEnv *env, int fd, int level, int option, jboolean enabled, const char *name) {
+    if (fd < 0) { errno = EBADF; throw_errno(env, name); return; }
     int value = enabled ? 1 : 0;
     if (setsockopt(fd, level, option, &value, sizeof(value)) < 0) throw_errno(env, name);
 }
 
 static jboolean get_bool_option(JNIEnv *env, int fd, int level, int option, const char *name) {
+    if (fd < 0) { errno = EBADF; throw_errno(env, name); return JNI_FALSE; }
     int value = 0;
     socklen_t length = sizeof(value);
     if (getsockopt(fd, level, option, &value, &length) < 0) {
@@ -531,11 +591,14 @@ static jboolean get_bool_option(JNIEnv *env, int fd, int level, int option, cons
 }
 
 static void set_int_option(JNIEnv *env, int fd, int level, int option, jint value, const char *name) {
+    if (fd < 0) { errno = EBADF; throw_errno(env, name); return; }
+    if (value <= 0) { throw_with_message(env, "socket buffer size must be positive"); return; }
     int native_value = value;
     if (setsockopt(fd, level, option, &native_value, sizeof(native_value)) < 0) throw_errno(env, name);
 }
 
 static jint get_int_option(JNIEnv *env, int fd, int level, int option, const char *name) {
+    if (fd < 0) { errno = EBADF; throw_errno(env, name); return -1; }
     int value = 0;
     socklen_t length = sizeof(value);
     if (getsockopt(fd, level, option, &value, &length) < 0) {
@@ -615,9 +678,28 @@ Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, j
     struct timeval value;
     value.tv_sec = timeout_ms / 1000;
     value.tv_usec = (timeout_ms % 1000) * 1000;
-    int fd = as_fd(raw_fd);
+    int fd = require_fd(env, raw_fd, "setsockopt(SO_RCVTIMEO)");
+    if (fd < 0) return;
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) < 0) {
         throw_errno(env, "setsockopt(SO_RCVTIMEO)");
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_net_NativeSocketBridge_setSendTimeout(
+        JNIEnv *env, jclass cls, jlong raw_fd, jint timeout_ms) {
+    (void)cls;
+    if (timeout_ms < 0) {
+        throw_with_message(env, "SO_SNDTIMEO cannot be negative");
+        return;
+    }
+    struct timeval value;
+    value.tv_sec = timeout_ms / 1000;
+    value.tv_usec = (timeout_ms % 1000) * 1000;
+    int fd = require_fd(env, raw_fd, "setsockopt(SO_SNDTIMEO)");
+    if (fd < 0) return;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value)) < 0) {
+        throw_errno(env, "setsockopt(SO_SNDTIMEO)");
     }
 }
 
@@ -626,7 +708,8 @@ Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, j
     (void)cls;
     struct timeval value;
     socklen_t length = sizeof(value);
-    int fd = as_fd(raw_fd);
+    int fd = require_fd(env, raw_fd, "getsockopt(SO_RCVTIMEO)");
+    if (fd < 0) return -1;
     if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, &length) < 0) {
         throw_errno(env, "getsockopt(SO_RCVTIMEO)");
         return -1;
