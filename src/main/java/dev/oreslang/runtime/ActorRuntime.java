@@ -2251,7 +2251,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
-        public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
+        public boolean isAlive() {
+            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
+            if (caller != null
+                    && caller.kind() == ActorKind.UNTRUSTED
+                    && !caller.actorId().equals(id)) {
+                throw new SecurityException(
+                        "untrusted actors cannot inspect another actor's lifecycle state");
+            }
+            return ActorRuntime.this.isAlive(this);
+        }
         public Optional<Throwable> failure() {
             ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
             if (caller != null
