@@ -69,7 +69,7 @@ define module app as
 end
 ```
 
-Outside `X`, `X.f` is not an ordinary local `Foo`: it is a capability proxy. Its public method calls execute in the singleton owner actor and must be immediately awaited. Object fields, raw references, method extraction, and rebinding the proxy into an ordinary local are rejected. Other public singleton fields remain illegal.
+Outside `X`, `X.f` is not an ordinary local `Foo`: it is a capability proxy. Its public method calls execute in the singleton owner actor and must be immediately awaited. Object fields, raw references, method extraction, and rebinding the proxy into an ordinary local are rejected. Other public singleton fields remain illegal except immutable `pub val/const Symbol` identities; those scalar reads also cross the singleton mailbox and must be immediately awaited.
 
 Singleton state fields require explicit process-stable types because they form a process-lifetime hot-reload schema. Ordinary state initializers must be context-free: literals and pure expressions over already initialized stable singleton fields are allowed, while capability access, arbitrary function calls, `await`, mutation, and closures are not. The narrow exception is an exported immutable class-instance proxy initialized directly with a context-free `new Class(...)`. Type aliases are currently excluded from process state so redefining an alias cannot silently reinterpret an existing layout.
 
@@ -82,6 +82,55 @@ Every external singleton call must be immediately awaited, and singleton module/
 Each singleton call commits or rolls back only the state owned by that singleton actor. Calls to other singleton actors are independent commits: if A successfully changes B and A later fails, B is not implicitly rolled back. Distributed atomicity requires an explicit higher-level protocol rather than being hidden inside ordinary actor calls.
 
 A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout. Replacing singleton code against live state requires `HOT_CODE_LOAD`; managed generations are process-monotonic and stale code cannot roll active singleton behavior backward.
+
+Singleton state is a **pinned process root by default**. Automatic/tracing GC and actor-local GC may reclaim ordinary unreachable values, and ownership-managed values may be dropped deterministically, but neither mechanism implicitly destroys a live singleton module. Trusted code must opt into singleton reclamation explicitly:
+
+```ores
+val bool collected = await process.collect_singleton(counter);
+```
+
+`process.collect_singleton(counter)` requires `PROCESS_SINGLETON` and accepts the singleton module namespace itself, not a string or raw pointer. It closes admission to that singleton, drains calls that were already admitted, performs runtime cleanup, removes the process registry root, and completes only after reclamation is safe. Stale handles stay invalid. A later access creates a fresh singleton instance and reruns that singleton's initialization. This is user-controlled GC as a memory-safe lifecycle operation, not an unsafe `free`.
+
+## Symbols
+
+`Symbol` is an immutable identity primitive for protocol tags, dispatch keys, and other identity-bearing labels. A Symbol is a token; it is never permission to share a mutable heap pointer.
+
+Oreslang has three explicit symbol domains:
+
+```ores
+val Symbol ready = :ready;                         // PROCESS
+val Symbol process = Symbol.process("ready");     // PROCESS
+val Symbol stable =
+    Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2"); // STABLE
+val Symbol local = Symbol.local("request-tag");   // LOCAL, actor only
+```
+
+`:ready` is syntax sugar for a trusted process Symbol. `Symbol.process(key)` is strongly canonical for the lifetime of the trusted OS-process runtime: the same key resolves to the same process identity across main execution, shared actors, and trusted isolated actors that participate in that process domain. Process symbols are deliberately bounded; dynamic unbounded input must not be blindly interned into this table. A reserved slice of the fixed table is available only to compiler-known `:literal` tags so trusted dynamic interning cannot starve later static or hot-loaded protocol symbols.
+
+`Symbol.local(key)` belongs to the currently executing actor. It is canonical only inside that actor, cannot be serialized or sent to another actor, and its local interning table disappears with the actor cell. This is the preferred Symbol domain for dynamic labels that do not require process-wide identity.
+
+`Symbol.stable(uuid)` uses a canonical UUID as its persistent identity. Stable symbols can be serialized and reconstructed without depending on a process-local numeric handle. For compatibility, `new Symbol("uuid")` is the stable-UUID constructor; new code should prefer `Symbol.stable(...)` because the lifetime domain is explicit.
+
+Process-local numeric handles are monotonically allocated and are never the wire representation. Wire transport carries the Symbol scope plus canonical key. A LOCAL Symbol has no wire form. A STABLE Symbol compares by its stable UUID identity; PROCESS and LOCAL identities remain scoped to their owning runtime domain.
+
+A universal binding can live in singleton state:
+
+```ores
+define singleton module UniversalSymbols as
+  pub val Symbol request =
+      Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+end
+
+define module app as
+  pub fnc request_symbol() => Symbol {
+    return await UniversalSymbols.request;
+  }
+end
+```
+
+The singleton state cell pins the **binding and singleton state**, not the existence of a process/stable Symbol identity. Ordinary GC never destroys a live singleton. `await process.collect_singleton(UniversalSymbols)` closes admission, drains admitted work, performs cleanup, and removes that singleton root; it does not erase or reuse the underlying PROCESS/STABLE Symbol identity. A later singleton instance may bind the same canonical Symbol again. LOCAL symbols are rejected from process-singleton state.
+
+Adversarial/untrusted actors and Graal isolates do not join any trusted Symbol domain. They cannot create, decode, or receive trusted Symbol values, including Symbols nested inside otherwise Sendable messages. Cross that security boundary with a validated string or enum representation instead.
 
 ## Initialization lifecycle
 
