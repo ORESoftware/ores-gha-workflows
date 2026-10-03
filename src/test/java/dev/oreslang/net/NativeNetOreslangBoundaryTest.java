@@ -49,7 +49,8 @@ final class NativeNetOreslangBoundaryTest {
                   val listener = native_net.listen("127.0.0.1", 18080, 16, true);
                   val client = native_net.accept(&listener);
                   val bytes = native_net.read_some(&client, 1024);
-                  native_net.write_utf8(&client, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+                  val reply = arr[79, 75];
+                  native_net.write(&client, reply, 0, 2);
                   native_net.close(client);
                   native_net.close(listener);
                   return;
@@ -77,5 +78,12 @@ final class NativeNetOreslangBoundaryTest {
         assertFalse(source.contains("int handle"));
         assertTrue(source.contains("NativeSocketHandle"));
         assertTrue(source.contains("&NativeSocketHandle"));
+        assertTrue(source.contains("write_all"));
+        assertTrue(source.contains("write_all_from"));
+
+        String bridge = Files.readString(
+                Path.of("src/main/java/dev/oreslang/net/NativeNetBuiltin.java"));
+        assertFalse(bridge.contains("write_utf8"));
+        assertFalse(bridge.contains("StandardCharsets"));
     }
 }
