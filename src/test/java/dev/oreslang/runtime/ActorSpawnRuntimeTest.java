@@ -92,6 +92,34 @@ final class ActorSpawnRuntimeTest {
     }
 
     @Test
+    void callableFailureFailsResultAndRecordsActorTerminationCause() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    "boom",
+                    (message, context) -> {
+                        throw new IllegalStateException(message);
+                    });
+
+            ActorRuntime.ActorRef<String> ref = spawn.ready().get(2, TimeUnit.SECONDS);
+
+            ExecutionException resultFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> spawn.result().get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, resultFailure.getCause());
+            assertEquals("boom", resultFailure.getCause().getMessage());
+
+            ExecutionException doneFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> spawn.done().get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, doneFailure.getCause());
+
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
     void actorSpawnTicketCannotCrossActorBoundary() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch release = new CountDownLatch(1);
