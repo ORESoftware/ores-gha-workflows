@@ -1,0 +1,68 @@
+name: native-net-aot-targeted
+
+on:
+  push:
+    branches:
+      - "feat/oreslang-native-net-pr127-targeted-cade249a"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-net-aot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build interpreter-only AOT image
+        run: mvn -B -ntp -Pnative-aot -DskipTests package
+      - name: Exercise JNI TCP/HTTP from AOT binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat >/tmp/native-net-aot.ores <<'EOF'
+          define module app
+            pub fnc main() => void {
+              val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:18080/").GET().build();
+              val client = net.http.HttpClient.newHttpClient();
+              val response = client.send(request, net.http.HttpResponse.BodyHandlers.ofString());
+              stdio.println(response.statusCode());
+              return;
+            }
+          end
+          EOF
+
+          python3 -m http.server 18080 --bind 127.0.0.1 >/tmp/ores-http-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 50); do
+            if python3 - <<'PY'
+          import socket
+          s = socket.socket()
+          s.settimeout(0.1)
+          try:
+              s.connect(("127.0.0.1", 18080))
+          except OSError:
+              raise SystemExit(1)
+          finally:
+              s.close()
+          PY
+            then
+              break
+            fi
+            sleep 0.1
+          done
+
+          ./target/ores-aot --mode=aot --platform=linux --allow=NETWORK /tmp/native-net-aot.ores | tee /tmp/native-net-aot.out
+          grep -Fxq '200' /tmp/native-net-aot.out
