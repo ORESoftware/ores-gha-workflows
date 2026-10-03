@@ -161,9 +161,15 @@ RESERVED -> STARTING -> READY -> TERMINATED
 `ActorSpawn` ticket. The synchronous path reserves the stable `ActorId`,
 creates the control futures, admits the initial message, and schedules the actor;
 it does not wait for behavior initialization or user actor code. This path is
-designed to be comfortably below 1 ms in the uncontended normal case, but the
-language does **not** promise a wall-clock deadline because OS scheduling,
-contention, sandbox admission, and host load are external variables.
+designed to be comfortably below 1 ms in the uncontended normal case for
+small/ordinary argument graphs, but the language does **not** promise a
+wall-clock deadline because OS scheduling, contention, sandbox admission, and
+host load are external variables. Initial actor-call arguments are validated
+and snapshotted/admitted synchronously so caller mutation cannot race actor
+startup; therefore spawn latency is also intentionally proportional to an
+unusually large argument graph. Bulk data should use bounded streaming,
+owned-region transfer, or other explicit capabilities rather than giant spawn
+arguments.
 
 The ticket's `ready` future completes only after actor behavior initialization
 succeeds and the mailbox/control endpoint is usable. `await spawn ...` is
