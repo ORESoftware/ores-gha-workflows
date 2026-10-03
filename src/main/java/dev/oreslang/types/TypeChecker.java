@@ -930,6 +930,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "spawn target '" + target.name() + "' is not declared with the actor keyword");
             }
+            if (currentActorKind == Ast.ActorKind.PRIVATE
+                    && target.actorKind() == Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "isoactor/private actor code cannot spawn shared actor callable '"
+                                + target.name()
+                                + "' because that would escalate into the SHARED_MEMORY domain");
+            }
             validateCallTypeArgumentMarker(call, target.genericParameters(), label);
             Type result = checkGenericCallable(
                     target.genericParameters(),
