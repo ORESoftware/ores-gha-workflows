@@ -1374,6 +1374,7 @@ public final class TypeChecker {
                 case "ready" -> new Named(
                         "Future",
                         List.of(new Named("ActorRef", List.of())));
+                case "done" -> new Named("Future", List.of(Primitive.BOOL));
                 case "result" -> {
                     if (result == Primitive.VOID) {
                         throw new IllegalArgumentException(
