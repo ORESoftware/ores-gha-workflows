@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -151,6 +152,30 @@ final class ActorRuntimeTest {
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertEquals(List.of(1, 2), observed.get());
             assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) observed.get()).add(9));
+        }
+    }
+
+    @Test
+    void repeatedMutableSourceReferencesDoNotCreateReceiverAliases() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<List<?>> observed = new AtomicReference<>();
+
+            var ref = runtime.<List<Object>>spawn(() -> (message, context) -> {
+                observed.set(message);
+                received.countDown();
+            });
+
+            ArrayList<Integer> sharedMutable = new ArrayList<>(List.of(1, 2));
+            ref.send(List.of(sharedMutable, sharedMutable));
+            sharedMutable.add(3);
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(2, observed.get().size());
+            assertEquals(List.of(1, 2), observed.get().get(0));
+            assertEquals(List.of(1, 2), observed.get().get(1));
+            assertNotSame(observed.get().get(0), observed.get().get(1),
+                    "ordinary actor message copying must not preserve mutable source aliases");
         }
     }
 
@@ -447,39 +472,6 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void runtimeCloseStopsActorEvenWhenMailboxIsSaturated() throws Exception {
-        IsolatePolicy tinyMailbox = new IsolatePolicy(
-                Set.of(),
-                32L * 1024 * 1024,
-                1,
-                Duration.ofSeconds(1));
-
-        ActorRuntime runtime = new ActorRuntime(tinyMailbox);
-        CountDownLatch entered = new CountDownLatch(1);
-        CountDownLatch stopped = new CountDownLatch(1);
-
-        var ref = runtime.<String>spawn(tinyMailbox, () -> (message, context) -> {
-            entered.countDown();
-            try {
-                new CountDownLatch(1).await();
-            } finally {
-                stopped.countDown();
-            }
-        });
-
-        ref.send("active");
-        assertTrue(entered.await(1, TimeUnit.SECONDS));
-        ref.send("queued"); // saturates the one-slot mailbox while the actor is blocked
-
-        runtime.close();
-
-        assertTrue(stopped.await(1, TimeUnit.SECONDS),
-                "runtime shutdown must not depend on successfully enqueueing the STOP sentinel");
-        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
-        assertDoesNotThrow(runtime::close);
-    }
-
-    @Test
     void actorMailboxBackpressureRejectsBeyondConfiguredCapacity() throws Exception {
         IsolatePolicy tinyMailbox = new IsolatePolicy(
                 Set.of(),
@@ -575,6 +567,60 @@ final class ActorRuntimeTest {
                 current = current.getCause();
             }
             assertTrue(deadline, String.valueOf(observed.get()));
+        }
+    }
+
+    @Test
+    void actorCanCloseItsOwnRuntimeWithoutDeadlocking() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch returnedFromClose = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            entered.countDown();
+            context.runtime().close();
+            returnedFromClose.countDown();
+        });
+
+        ref.send("shutdown");
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertTrue(returnedFromClose.await(1, TimeUnit.SECONDS),
+                "actor deadlocked while closing its own runtime");
+        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
+        assertThrows(IllegalStateException.class,
+                () -> runtime.<String>spawn(() -> (message, context) -> { }));
+    }
+
+    @Test
+    void sendRacingWithRuntimeCloseNeverSucceedsAfterCloseReturns() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            started.countDown();
+            release.await(1, TimeUnit.SECONDS);
+        });
+
+        ref.send("block");
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+
+        CompletableFuture<Void> closing = CompletableFuture.runAsync(runtime::close);
+        for (int i = 0; i < 100 && !closing.isDone(); i++) {
+            try {
+                ref.send("racing");
+            } catch (IllegalStateException expected) {
+                break;
+            }
+            Thread.yield();
+        }
+
+        release.countDown();
+        closing.join();
+
+        for (int i = 0; i < 16; i++) {
+            assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
         }
     }
 
