@@ -38,7 +38,8 @@ final class NativeSocketHandleTest {
         NativeSocketHandle replacement = new NativeSocketHandle(11);
         assertTrue(replacement.isOpen());
         assertNotEquals(stale.generation(), replacement.generation());
-        assertEquals(11L, replacement.withFd(fd -> fd));
+        long replacementFd = replacement.withFd(fd -> fd);
+        assertEquals(11L, replacementFd);
     }
 
     @Test
