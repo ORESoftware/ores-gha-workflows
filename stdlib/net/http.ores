@@ -11,10 +11,10 @@ define module http_wire
   }
 
   pub fnc default_port(string scheme) => int {
-    if scheme == "http"
+    if scheme == "http"; do
       return 80;
     fi
-    if scheme == "https"
+    if scheme == "https"; do
       return 443;
     fi
     raise "unsupported URI scheme";
@@ -54,13 +54,13 @@ define module http_wire
   pub fnc redirect_policy_allows(
       string policy,
       bool same_authority) => bool {
-    if policy == "NEVER"
+    if policy == "NEVER"; do
       return false;
     fi
-    if policy == "NORMAL"
+    if policy == "NORMAL"; do
       return same_authority;
     fi
-    if policy == "ALWAYS"
+    if policy == "ALWAYS"; do
       return true;
     fi
     raise "unknown redirect policy";
