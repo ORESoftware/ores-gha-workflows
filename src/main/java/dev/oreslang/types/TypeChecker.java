@@ -1069,9 +1069,6 @@ public final class TypeChecker {
             case "write" -> new Function(
                     List.of(borrowedHandle, bytes, Primitive.INT, Primitive.INT),
                     Primitive.INT);
-            case "write_utf8" -> new Function(
-                    List.of(borrowedHandle, Primitive.STRING),
-                    Primitive.INT);
             case "shutdown_input", "shutdown_output" ->
                     new Function(List.of(borrowedHandle), Primitive.VOID);
             case "close" -> new Function(List.of(handle), Primitive.VOID);
