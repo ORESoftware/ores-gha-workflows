@@ -249,8 +249,9 @@ final class NativeNetworkingLanguageTest {
                   pub fnc main() => void {
                     val builder = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/submit");
                     builder.header("Content-Type", "text/plain");
-                    val publisher = net.http.HttpRequest.BodyPublishers.ofString("hello-native");
-                    val request = builder.POST(publisher).build();
+                    val request = builder.POST(
+                        net.http.HttpRequest.BodyPublishers.ofString("hello-native")
+                    ).build();
                     val client = net.http.HttpClient.newHttpClient();
                     val response = client.send(request, net.http.HttpResponse.BodyHandlers.ofString());
                     stdio.println(response.statusCode());
