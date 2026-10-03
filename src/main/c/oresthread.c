@@ -275,9 +275,40 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeAwaitEnabled(
     pthread_mutex_unlock(&pool->mutex);
 }
 
+static void *carrier_reaper_main(void *raw) {
+    ores_carrier_pool *pool = (ores_carrier_pool *)raw;
+
+    // Joining happens off the runtime/control-plane caller. A carrier that is
+    // still inside non-cooperative guest code may delay reclamation of this
+    // retired pool, but can no longer block ActorRuntime.close()/shutdownNow().
+    for (int i = 0; i < pool->max_threads; i++) {
+        pthread_join(pool->threads[i], NULL);
+    }
+
+    JNIEnv *env = NULL;
+    JavaVM *jvm = pool->jvm;
+    JavaVMAttachArgs attach;
+    memset(&attach, 0, sizeof(attach));
+    attach.version = JNI_VERSION_1_8;
+    attach.name = "ores-carrier-reaper";
+    attach.group = NULL;
+
+    jint status = (*jvm)->AttachCurrentThreadAsDaemon(
+            jvm, (void **)&env, &attach);
+    if (status == JNI_OK && env != NULL) {
+        free_pool(env, pool);
+        (*jvm)->DetachCurrentThread(jvm);
+    }
+    // If the VM is already tearing down and attachment fails, deliberately
+    // leak only the retired native pool metadata rather than touching JNI with
+    // an invalid environment. Process teardown will reclaim it.
+    return NULL;
+}
+
 JNIEXPORT void JNICALL
 Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
         JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
@@ -290,13 +321,17 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
     }
     pthread_mutex_unlock(&pool->mutex);
 
-    pthread_t self = pthread_self();
-    for (int i = 0; i < pool->max_threads; i++) {
-        if (!pthread_equal(self, pool->threads[i])) {
-            pthread_join(pool->threads[i], NULL);
-        }
+    pthread_t reaper;
+    if (pthread_create(&reaper, NULL, carrier_reaper_main, pool) == 0) {
+        pthread_detach(reaper);
+        return;
     }
-    free_pool(env, pool);
+
+    /*
+     * Resource exhaustion must not force the caller back into unbounded joins.
+     * Leave this retired pool rooted until process teardown. Actor admission is
+     * already closed and every parked/cooperative carrier has been woken.
+     */
 }
 
 JNIEXPORT jlong JNICALL

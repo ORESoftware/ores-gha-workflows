@@ -5,10 +5,12 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeCarrierExecutor;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -130,4 +132,31 @@ final class NativeCarrierExecutorTest {
             executor.shutdownNow();
         }
     }
+
+    @Test
+    void uncooperativeTaskCannotHoldNativePoolShutdownHostage() throws Exception {
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-retire-");
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicBoolean release = new AtomicBoolean();
+
+        executor.execute(() -> {
+            entered.countDown();
+            while (!release.get()) {
+                Thread.onSpinWait();
+                // Deliberately ignore Java interruption: this models a trusted
+                // native/JVM stack that fails to reach a cooperative safepoint.
+            }
+        });
+
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            assertTimeoutPreemptively(Duration.ofSeconds(2), executor::shutdownNow,
+                    "runtime shutdown must retire the carrier instead of joining an uncooperative stack");
+        } finally {
+            release.set(true);
+        }
+    }
+
+
 }

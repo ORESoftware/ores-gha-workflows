@@ -50,8 +50,12 @@ public final class LinkedProgramRunner {
         // context is built/entered; RootNode must never hop threads after entry.
         ActorRuntime.executeProcessRoot(policy, () -> {
             Context.Builder builder = policy.restrictedContextBuilder(executionProfile);
-            if (out != null) builder.out(out);
-            if (err != null) builder.err(err);
+            if (out != null) {
+                builder.out(policy.adversarial() ? new RedirectedOutputStream(out) : out);
+            }
+            if (err != null) {
+                builder.err(policy.adversarial() ? new RedirectedOutputStream(err) : err);
+            }
 
             try (Context context = builder.build()) {
                 LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
@@ -121,6 +125,42 @@ public final class LinkedProgramRunner {
             collectRelativeImportClosure(target, sources);
         }
     }
+
+    /**
+     * Graal's UNTRUSTED sandbox rejects ambient System.out/System.err. Wrap host
+     * streams in an explicit non-closing redirection object so sandbox output
+     * limits remain enforceable without granting the guest an ambient process
+     * stream handle.
+     */
+    private static final class RedirectedOutputStream extends OutputStream {
+        private final OutputStream delegate;
+
+        private RedirectedOutputStream(OutputStream delegate) {
+            this.delegate = java.util.Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public synchronized void write(int value) throws IOException {
+            delegate.write(value);
+        }
+
+        @Override
+        public synchronized void write(byte[] bytes, int offset, int length) throws IOException {
+            delegate.write(bytes, offset, length);
+        }
+
+        @Override
+        public synchronized void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            // Context teardown must never close the process-owned destination.
+            flush();
+        }
+    }
+
 
     private static String unitId(Path path) {
         return path.toAbsolutePath().normalize().toString().replace('\\', '/');

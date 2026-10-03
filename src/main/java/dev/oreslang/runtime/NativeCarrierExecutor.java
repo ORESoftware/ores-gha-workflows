@@ -48,6 +48,8 @@ public final class NativeCarrierExecutor {
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
     private final AtomicBoolean shutdown = new AtomicBoolean();
+    /** Serializes Java->native pool calls against asynchronous native retirement. */
+    private final Object nativeLifecycleLock = new Object();
     private final long nativeHandle;
 
     public NativeCarrierExecutor(
@@ -210,7 +212,12 @@ public final class NativeCarrierExecutor {
             if (carrier != null) carrier.interrupt();
         }
 
-        nativeShutdown(nativeHandle);
+        synchronized (nativeLifecycleLock) {
+            // Native shutdown is non-blocking: it marks the pool closed and
+            // hands joins/reclamation to a native reaper so an uncooperative
+            // guest stack can never hold this caller hostage.
+            nativeShutdown(nativeHandle);
+        }
         return List.copyOf(abandoned);
     }
 
@@ -229,9 +236,14 @@ public final class NativeCarrierExecutor {
                     "corePoolSize must be in [1," + maximumPoolSize + "]");
         }
         if (shutdown.get()) throw new RejectedExecutionException("native carrier executor is shut down");
-        corePoolSize.set(value);
-        largestPoolSize.accumulateAndGet(value, Math::max);
-        nativeSetDesired(nativeHandle, value);
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            }
+            corePoolSize.set(value);
+            largestPoolSize.accumulateAndGet(value, Math::max);
+            nativeSetDesired(nativeHandle, value);
+        }
     }
 
     /**
@@ -265,8 +277,11 @@ public final class NativeCarrierExecutor {
 
     /** CPU consumed by a specific carrier slot in this pool, for watchdog accounting. */
     public long carrierCpuTimeNanos(int slot) {
-        if (slot < 0 || slot >= maximumPoolSize) return 0L;
-        return nativeCarrierCpuTimeNanos(nativeHandle, slot);
+        if (slot < 0 || slot >= maximumPoolSize || shutdown.get()) return 0L;
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) return 0L;
+            return nativeCarrierCpuTimeNanos(nativeHandle, slot);
+        }
     }
 
     private static native long nativeCreate(
