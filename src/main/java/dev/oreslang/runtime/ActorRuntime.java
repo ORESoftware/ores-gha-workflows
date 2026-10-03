@@ -1090,6 +1090,25 @@ public final class ActorRuntime implements AutoCloseable {
                 false);
     }
 
+    /**
+     * Host/launcher entry point for main-process work. The complete Graal
+     * context lifecycle must be submitted from outside Context.eval/RootNode;
+     * hopping threads after a context is already entered violates Graal
+     * thread-affinity rules.
+     */
+    public static <T> T executeProcessRoot(
+            IsolatePolicy policyCeiling,
+            Supplier<T> task) {
+        Objects.requireNonNull(policyCeiling, "policyCeiling");
+        Objects.requireNonNull(task, "task");
+        ActorRuntime hostRuntime = processShared(policyCeiling, TurnExecutor.direct());
+        try {
+            return hostRuntime.executeRootTask(task);
+        } finally {
+            hostRuntime.close();
+        }
+    }
+
     private ActorRuntime(
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,

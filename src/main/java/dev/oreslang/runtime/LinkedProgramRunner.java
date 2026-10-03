@@ -45,43 +45,51 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build = compiler.compile(sources);
         String entryId = unitId(entry);
 
-        Context.Builder builder = policy.restrictedContextBuilder(executionProfile);
-        if (out != null) builder.out(out);
-        if (err != null) builder.err(err);
+        // The official launcher owns the context-entry thread. Schedule the
+        // entire Graal lifecycle on the process SHARED/root carrier before the
+        // context is built/entered; RootNode must never hop threads after entry.
+        ActorRuntime.executeProcessRoot(policy, () -> {
+            Context.Builder builder = policy.restrictedContextBuilder(executionProfile);
+            if (out != null) builder.out(out);
+            if (err != null) builder.err(err);
 
-        try (Context context = builder.build()) {
-            LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
-            List<String> ids = new ArrayList<>(build.units().keySet());
-            ids.sort(String::compareTo);
+            try (Context context = builder.build()) {
+                LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
+                List<String> ids = new ArrayList<>(build.units().keySet());
+                ids.sort(String::compareTo);
 
-            // Parse every unit before executing any guest lifecycle hook.
-            for (String id : ids) {
-                IncrementalCompiler.CompiledUnit unit = build.units().get(id);
-                Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
-                        .mimeType(OresLanguage.MIME_TYPE)
-                        .buildLiteral();
-                parsedUnits.put(id, context.parse(source));
-            }
-
-            // Link every evaluator into the shared context. Cycles terminate
-            // because this is a flat installation pass, never recursive import
-            // execution.
-            for (String id : ids) {
-                parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
-            }
-
-            // Dependencies initialize before importers. All members of an SCC
-            // have already been linked before the first init in that SCC runs.
-            for (List<String> group : build.initializationGroups()) {
-                for (String id : group) {
-                    parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                // Parse every unit before executing any guest lifecycle hook.
+                for (String id : ids) {
+                    IncrementalCompiler.CompiledUnit unit = build.units().get(id);
+                    Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
+                            .mimeType(OresLanguage.MIME_TYPE)
+                            .buildLiteral();
+                    parsedUnits.put(id, context.parse(source));
                 }
-            }
 
-            Value entryPoint = parsedUnits.get(entryId);
-            if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
-            entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
-        }
+                // Link every evaluator into the shared context. Cycles terminate
+                // because this is a flat installation pass, never recursive import
+                // execution.
+                for (String id : ids) {
+                    parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                }
+
+                // Dependencies initialize before importers. All members of an SCC
+                // have already been linked before the first init in that SCC runs.
+                for (List<String> group : build.initializationGroups()) {
+                    for (String id : group) {
+                        parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                    }
+                }
+
+                Value entryPoint = parsedUnits.get(entryId);
+                if (entryPoint == null) {
+                    throw new IllegalStateException("entry unit was not linked: " + entryId);
+                }
+                entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
+            }
+            return null;
+        });
 
         return build;
     }

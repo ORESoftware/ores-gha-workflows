@@ -62,22 +62,21 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, INIT_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(current::initialize);
+            return current.initialize();
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(
-                    () -> current.executeMain(new Object[0]));
+            return current.executeMain(new Object[0]);
         }
 
-        // Root/main guest execution belongs to the SHARED carrier domain. Keep
-        // link metadata installation outside the pool, then run init + main as
-        // one ordered root task so main never races its own initialization.
+        // RootNode is already executing inside an entered Graal context. It
+        // must not hop to another carrier here. Official launchers place the
+        // entire Context lifecycle on the process SHARED/root carrier before
+        // entering Graal; direct embedders retain ownership of their entry
+        // thread unless they opt into ActorRuntime.executeProcessRoot(...).
         current.link();
-        return context.actors().executeRootTask(() -> {
-            current.initialize();
-            return current.executeMain(arguments);
-        });
+        current.initialize();
+        return current.executeMain(arguments);
     }
 
     private Evaluator evaluator(OresContext context) {
