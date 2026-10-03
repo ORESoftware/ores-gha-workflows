@@ -22,7 +22,7 @@ final class MixedSourceInteropTest {
     @Test
     void splitsOresJavaIslandsWithoutInventingAnOresModule() {
         MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/demo.ores", "demo.ores", """
-                pub fnc main() => void {
+                pub fnc main(): void {
                   stdio.println(Hashing.decorate("hello"));
                   return;
                 }
@@ -50,7 +50,7 @@ final class MixedSourceInteropTest {
                   static String brace() { return "}"; }
 
                   ores {
-                    pub fnc add(int a, int b) => int {
+                    pub fnc add(int a, int b): int {
                       return a + b;
                     }
                   }
@@ -68,7 +68,7 @@ final class MixedSourceInteropTest {
     void oresJavaIslandCannotDeclareItsOwnPackage() {
         assertThrows(IllegalArgumentException.class, () -> MixedSourceUnit.parse(
                 "/tmp/demo.ores", "demo.ores", """
-                        pub fnc main() => void { return; }
+                        pub fnc main(): void { return; }
                         java {
                           package wrong.identity;
                           public final class Helper {}
@@ -80,7 +80,7 @@ final class MixedSourceInteropTest {
     void oresCallsJavaDeclaredInSameFile() throws Exception {
         Path source = temp.resolve("same-file.ores");
         Files.writeString(source, """
-                pub fnc main() => void {
+                pub fnc main(): void {
                   stdio.println(Hashing.decorate("hello"));
                   return;
                 }
@@ -132,11 +132,11 @@ final class MixedSourceInteropTest {
                   ores {
                     import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
-                    pub fnc identity(JArrayList value) => JArrayList {
+                    pub fnc identity(JArrayList value): JArrayList {
                       return value;
                     }
 
-                    pub fnc count(JArrayList value) => int {
+                    pub fnc count(JArrayList value): int {
                       return value.size();
                     }
                   }
@@ -156,7 +156,7 @@ final class MixedSourceInteropTest {
     void mixedJavaSourceRequiresSeparateTrustedCapability() throws Exception {
         Path source = temp.resolve("capability.ores");
         Files.writeString(source, """
-                pub fnc main() => void { return; }
+                pub fnc main(): void { return; }
                 java { final class Helper {} }
                 """);
 
@@ -177,7 +177,7 @@ final class MixedSourceInteropTest {
     void mixedJavaSourceIsJitOnlyUntilJavaIsPrecompiled() throws Exception {
         Path source = temp.resolve("mode.ores");
         Files.writeString(source, """
-                pub fnc main() => void { return; }
+                pub fnc main(): void { return; }
                 java { final class Helper {} }
                 """);
 

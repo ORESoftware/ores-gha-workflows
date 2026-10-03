@@ -88,6 +88,9 @@ public final class Parser {
             consume(AS, "'import *' requires 'as <namespace>'");
             namespace = consume(IDENT, "expected import namespace").lexeme();
         } else {
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "function imports use 'import fnc', not 'import fn'");
+            }
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
@@ -162,6 +165,9 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (isLegacyFnSpelling()) {
+            throw error(peek(), "functions are declared with 'fnc', not 'fn'");
+        }
         if (match(ACTOR, ISOACTOR)) {
             Token actorToken = previous();
             boolean isolated = actorToken.type() == ISOACTOR;
@@ -169,6 +175,9 @@ public final class Parser {
                 throw error(actorToken, "'shared isoactor' is contradictory; use either actor/shared actor or isoactor");
             }
             Ast.ActorKind actorKind = isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "actor functions are declared with 'actor fnc', not 'actor fn'");
+            }
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
@@ -199,7 +208,19 @@ public final class Parser {
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
-        consume(LPAREN, "expected '('");
+
+        if (match(EQUAL)) {
+            consume(PIPE, "lambda-style callable declarations use '= |...| -> ReturnType { ... }'");
+            List<Ast.Param> params = parseDeclaredPipeParameters();
+            consume(PIPE, "expected closing '|' in lambda-style callable declaration");
+            consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
+            Ast.TypeRef returnType = parseTypeRef();
+            List<Ast.Stmt> body = parseBlock();
+            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind,
+                    generics, params, returnType, annotations, body);
+        }
+
+        consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
@@ -221,6 +242,10 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isLegacyFnSpelling()) {
+                if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
+                throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
+            }
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
@@ -253,6 +278,10 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isLegacyFnSpelling()) {
+                if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
+                throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
+            }
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
 
@@ -292,6 +321,9 @@ public final class Parser {
             parseAnnotations();
             parseModifiers();
 
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
+            }
             if (match(FNC)) {
                 String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
@@ -488,11 +520,31 @@ public final class Parser {
                 annotated = annotation.arguments().getFirst();
             }
         }
-        Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
-        if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
-            throw error(previous(), "@Ret type and => return type disagree");
+
+        if (check(FAT_ARROW)) {
+            throw error(peek(), "fat arrow '=>' is reserved for function types; named callables use ': ReturnType'");
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        if (check(ARROW)) {
+            throw error(peek(), "named callable return types use ': ReturnType'; '->' is executable/lambda syntax");
+        }
+
+        Ast.TypeRef declared = match(COLON) ? parseTypeRef() : null;
+        if (annotated != null && declared != null && !sameType(annotated, declared)) {
+            throw error(previous(), "@Ret type and ': ReturnType' disagree");
+        }
+        return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
+    }
+
+    private List<Ast.Param> parseDeclaredPipeParameters() {
+        if (check(PIPE)) return List.of();
+        List<Ast.Param> params = new ArrayList<>();
+        do {
+            Ast.TypeRef type = parseTypeRef();
+            boolean mutable = match(MUT);
+            String name = consume(IDENT, "lambda-style callable declaration parameters require 'Type name'").lexeme();
+            params.add(new Ast.Param(type, name, false, mutable));
+        } while (match(COMMA));
+        return List.copyOf(params);
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
@@ -634,7 +686,10 @@ public final class Parser {
         }
 
         if (match(TYPEOF)) {
-            consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "function types use 'typeof fnc(...) => ReturnType', not 'typeof fn(...)'");
+            }
+            consume(FNC, "typeof function types use 'typeof fnc(...) => ReturnType'");
             return parseFunctionTypeSignature();
         }
 
@@ -674,7 +729,7 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        consume(ARROW, "function types use the slim arrow '->'");
+        consume(FAT_ARROW, "function types use the fat arrow '=>'");
         Ast.TypeRef result = parseTypeRef();
         return Ast.TypeRef.functionType(params, result);
     }
@@ -686,7 +741,7 @@ public final class Parser {
             if (type == LPAREN) depth++;
             else if (type == RPAREN) {
                 depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == FAT_ARROW;
             }
         }
         return false;
@@ -1389,6 +1444,10 @@ public final class Parser {
         advance();
         return true;
     }
+    private boolean isLegacyFnSpelling() {
+        return check(IDENT) && peek().lexeme().equals("fn");
+    }
+
     private boolean checkNextLexeme(String lexeme) {
         return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 1).lexeme().equals(lexeme);

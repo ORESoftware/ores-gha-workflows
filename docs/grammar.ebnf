@@ -88,14 +88,15 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" type_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
-return_spec     = [ "=>" type_ref ] ;
+return_spec     = [ ":" type_ref ] ;
+type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
@@ -208,8 +209,8 @@ record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
-function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
-                | "(" [ function_type_params ] ")" "->" type_ref ;
+function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
+                | "(" [ function_type_params ] ")" "=>" type_ref ;
 grouped_type    = "(" type_ref ")" ;
 function_type_params
                 = function_type_param { "," function_type_param } ;
