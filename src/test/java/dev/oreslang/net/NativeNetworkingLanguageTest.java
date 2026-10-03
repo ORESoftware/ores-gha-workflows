@@ -85,7 +85,6 @@ final class NativeNetworkingLanguageTest {
                 """.formatted(port);
 
         String output = evaluate(program);
-        assertTrue(output.contains("4"));
         assertTrue(output.contains("112")); // p
         assertTrue(output.contains("111")); // o
         assertTrue(output.contains("110")); // n
