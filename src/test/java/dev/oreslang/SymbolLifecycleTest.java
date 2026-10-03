@@ -10,8 +10,12 @@ import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -65,6 +69,90 @@ final class SymbolLifecycleTest {
         assertTrue(stable.processStable());
         assertTrue(first.sendable());
         assertTrue(stable.sendable());
+    }
+
+    @Test
+    void processAndStableInterningRemainCanonicalUnderConcurrency() throws Exception {
+        OresSymbol expectedProcess = OresSymbol.process("concurrent-process-key");
+        OresSymbol expectedStable =
+                OresSymbol.stable("93c1d30c-e89f-47ca-bca5-2f9208f21701");
+
+        try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
+            List<Future<OresSymbol>> processResults = new ArrayList<>();
+            List<Future<OresSymbol>> stableResults = new ArrayList<>();
+            for (int i = 0; i < 64; i++) {
+                processResults.add(pool.submit(
+                        () -> OresSymbol.process("concurrent-process-key")));
+                stableResults.add(pool.submit(
+                        () -> OresSymbol.stable("93c1d30c-e89f-47ca-bca5-2f9208f21701")));
+            }
+            for (Future<OresSymbol> result : processResults) {
+                assertSame(expectedProcess, result.get(2, TimeUnit.SECONDS));
+            }
+            for (Future<OresSymbol> result : stableResults) {
+                assertSame(expectedStable, result.get(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void trustedActorTransportPreservesProcessAndStableSymbolIdentity() throws Exception {
+        OresSymbol process = OresSymbol.process("trusted-transport");
+        OresSymbol stable =
+                OresSymbol.stable("64bcc7a9-cef3-4324-8dd6-91a06120963e");
+        AtomicReference<Object> observed = new AtomicReference<>();
+        CountDownLatch delivered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<Object> target = runtime.spawn(
+                    IsolatePolicy.developer(),
+                    () -> (message, context) -> {
+                        observed.set(message);
+                        delivered.countDown();
+                    });
+
+            target.send(List.of(process, stable));
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+        }
+
+        assertInstanceOf(List.class, observed.get());
+        List<?> received = (List<?>) observed.get();
+        assertSame(process, received.get(0));
+        assertSame(stable, received.get(1));
+    }
+
+    @Test
+    void sameKeyLocalSymbolsRemainDistinctAcrossActors() throws Exception {
+        AtomicReference<OresSymbol> first = new AtomicReference<>();
+        AtomicReference<OresSymbol> second = new AtomicReference<>();
+        CountDownLatch delivered = new CountDownLatch(2);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<String> actorA = runtime.spawn(
+                    IsolatePolicy.developer(),
+                    () -> (message, context) -> {
+                        first.set(OresSymbol.local(
+                                "same-local-key", context.runtime(), context.policy()));
+                        delivered.countDown();
+                    });
+            ActorRuntime.ActorRef<String> actorB = runtime.spawn(
+                    IsolatePolicy.developer(),
+                    () -> (message, context) -> {
+                        second.set(OresSymbol.local(
+                                "same-local-key", context.runtime(), context.policy()));
+                        delivered.countDown();
+                    });
+
+            actorA.send("go");
+            actorB.send("go");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+        }
+
+        assertNotNull(first.get());
+        assertNotNull(second.get());
+        assertNotSame(first.get(), second.get());
+        assertNotEquals(first.get(), second.get());
+        assertNotEquals(first.get().domainId(), second.get().domainId());
     }
 
     @Test
