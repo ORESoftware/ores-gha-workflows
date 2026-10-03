@@ -1,0 +1,33 @@
+name: native-net-targeted
+
+on:
+  push:
+    branches:
+      - "feat/oreslang-native-net-pr127-targeted-cade249a"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-net:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Reject java.net transport delegation
+        run: |
+          if grep -R -n -E '^[[:space:]]*import[[:space:]]+java\.net\.(Socket|ServerSocket|http\.)' src/main/java/dev/oreslang/net; then
+            echo "network implementation must not import Java socket/http transports" >&2
+            exit 1
+          fi
+      - name: Run native networking tests
+        run: mvn -B -ntp -Dtest=dev.oreslang.net.NativeSocketBridgeTest,dev.oreslang.net.NativeNetworkingLanguageTest test
