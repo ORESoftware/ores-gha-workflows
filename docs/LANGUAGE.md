@@ -446,7 +446,7 @@ untrusted actor RequestSandbox {
 }
 ```
 
-- an unqualified `actor` is **private**;
+- an unqualified `actor` is **shared**; use `isoactor` for confined/private actor memory;
 - `shared actor` is a **shared-memory-capable** actor;
 - `untrusted actor` is a **memory-isolated adversarial sandbox** with a hard lifetime/fuel/capability budget;
 - private, shared, and untrusted actors are scheduled on **different dispatcher pools** for bulkheading;
