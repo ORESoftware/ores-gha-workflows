@@ -1,0 +1,92 @@
+// Privileged Oreslang networking primitives.
+//
+// This module is intentionally protocol-free. The runtime supplies the
+// native_net builtin namespace after NETWORK capability admission.
+//
+// NativeSocketHandle is an opaque, move-only capability. It is never an Int,
+// never exposes the process-global numeric fd, and cannot cross actor
+// boundaries by value.
+define module native_net_api
+  pub fnc connect(String host, Int port, Int timeout_ms) => NativeSocketHandle {
+    return native_net.connect(host, port, timeout_ms);
+  }
+
+  pub fnc listen(
+      String host,
+      Int port,
+      Int backlog,
+      Bool reuse_address) => NativeSocketHandle {
+    return native_net.listen(host, port, backlog, reuse_address);
+  }
+
+  pub fnc accept(&NativeSocketHandle listener) => NativeSocketHandle {
+    return native_net.accept(listener);
+  }
+
+  pub fnc read(
+      &NativeSocketHandle handle,
+      Array<Int> bytes,
+      Int offset,
+      Int length) => Int {
+    return native_net.read(handle, bytes, offset, length);
+  }
+
+  pub fnc read_some(
+      &NativeSocketHandle handle,
+      Int maximum) => Array<Int> {
+    return native_net.read_some(handle, maximum);
+  }
+
+  pub fnc write(
+      &NativeSocketHandle handle,
+      Array<Int> bytes,
+      Int offset,
+      Int length) => Int {
+    return native_net.write(handle, bytes, offset, length);
+  }
+
+  pub fnc write_utf8(
+      &NativeSocketHandle handle,
+      String text) => Int {
+    return native_net.write_utf8(handle, text);
+  }
+
+  pub fnc shutdown_input(&NativeSocketHandle handle) => void {
+    native_net.shutdown_input(handle);
+    return;
+  }
+
+  pub fnc shutdown_output(&NativeSocketHandle handle) => void {
+    native_net.shutdown_output(handle);
+    return;
+  }
+
+  pub fnc is_open(&NativeSocketHandle handle) => Bool {
+    return native_net.is_open(handle);
+  }
+
+  pub fnc remote_address(&NativeSocketHandle handle) => String {
+    return native_net.remote_address(handle);
+  }
+
+  pub fnc local_address(&NativeSocketHandle handle) => String {
+    return native_net.local_address(handle);
+  }
+
+  pub fnc remote_port(&NativeSocketHandle handle) => Int {
+    return native_net.remote_port(handle);
+  }
+
+  pub fnc local_port(&NativeSocketHandle handle) => Int {
+    return native_net.local_port(handle);
+  }
+
+  pub fnc close(NativeSocketHandle handle) => void {
+    native_net.close(handle);
+    return;
+  }
+
+  pub fnc resolve_all(String host) => Array<String> {
+    return native_net.resolve_all(host);
+  }
+end

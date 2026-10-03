@@ -251,27 +251,27 @@ public final class OresNet {
     }
 
     private static final class SocketValue extends NetworkValue {
-        private long fd;
-        private boolean connected;
-        private boolean inputShutdown;
-        private boolean outputShutdown;
-        private boolean closed;
+        private volatile NativeSocketHandle handle;
+        private volatile boolean connected;
+        private volatile boolean inputShutdown;
+        private volatile boolean outputShutdown;
+        private volatile boolean closed;
 
-        private SocketValue(OresContext context, long fd, boolean connected) {
+        private SocketValue(OresContext context, NativeSocketHandle handle, boolean connected) {
             super(context);
-            this.fd = fd;
+            this.handle = handle;
             this.connected = connected;
         }
 
         static SocketValue unconnected(OresContext context) {
-            return new SocketValue(context, -1, false);
+            return new SocketValue(context, null, false);
         }
 
         static SocketValue connect(OresContext context, String host, int port, int timeoutMillis) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.Socket.connect");
             checkPort(port, "net.Socket.connect");
-            long fd = io(() -> NativeSocketBridge.connect(host, port, timeoutMillis));
-            return new SocketValue(context, fd, true);
+            NativeSocketHandle handle = io(() -> NativeSocketBridge.connectHandle(host, port, timeoutMillis));
+            return new SocketValue(context, handle, true);
         }
 
         @Override
@@ -297,7 +297,7 @@ public final class OresNet {
                     requireArity(args, 0, "Socket.shutdownInput");
                     ensureConnected();
                     requireNetwork("Socket.shutdownInput");
-                    ioVoid(() -> NativeSocketBridge.shutdownInput(fd));
+                    ioVoid(() -> NativeSocketBridge.shutdownInput(handle));
                     inputShutdown = true;
                     return OresNull.INSTANCE;
                 };
@@ -305,7 +305,7 @@ public final class OresNet {
                     requireArity(args, 0, "Socket.shutdownOutput");
                     ensureConnected();
                     requireNetwork("Socket.shutdownOutput");
-                    ioVoid(() -> NativeSocketBridge.shutdownOutput(fd));
+                    ioVoid(() -> NativeSocketBridge.shutdownOutput(handle));
                     outputShutdown = true;
                     return OresNull.INSTANCE;
                 };
@@ -328,53 +328,53 @@ public final class OresNet {
                 case "getInetAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getInetAddress");
                     ensureConnected();
-                    String address = io(() -> NativeSocketBridge.remoteAddress(fd));
+                    String address = io(() -> NativeSocketBridge.remoteAddress(handle));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getLocalAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalAddress");
                     ensureConnected();
-                    String address = io(() -> NativeSocketBridge.localAddress(fd));
+                    String address = io(() -> NativeSocketBridge.localAddress(handle));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getPort");
                     ensureConnected();
-                    return (long) io(() -> NativeSocketBridge.remotePort(fd));
+                    return (long) io(() -> NativeSocketBridge.remotePort(handle));
                 };
                 case "getLocalPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalPort");
                     ensureConnected();
-                    return (long) io(() -> NativeSocketBridge.localPort(fd));
+                    return (long) io(() -> NativeSocketBridge.localPort(handle));
                 };
                 case "getRemoteSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getRemoteSocketAddress");
                     ensureConnected();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.remoteAddress(fd)),
-                            io(() -> NativeSocketBridge.remotePort(fd)));
+                            io(() -> NativeSocketBridge.remoteAddress(handle)),
+                            io(() -> NativeSocketBridge.remotePort(handle)));
                 };
                 case "getLocalSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalSocketAddress");
                     ensureConnected();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.localAddress(fd)),
-                            io(() -> NativeSocketBridge.localPort(fd)));
+                            io(() -> NativeSocketBridge.localAddress(handle)),
+                            io(() -> NativeSocketBridge.localPort(handle)));
                 };
-                case "setTcpNoDelay" -> boolSetter("Socket.setTcpNoDelay", value -> NativeSocketBridge.setTcpNoDelay(fd, value));
-                case "getTcpNoDelay" -> boolGetter("Socket.getTcpNoDelay", () -> NativeSocketBridge.getTcpNoDelay(fd));
-                case "setKeepAlive" -> boolSetter("Socket.setKeepAlive", value -> NativeSocketBridge.setKeepAlive(fd, value));
-                case "getKeepAlive" -> boolGetter("Socket.getKeepAlive", () -> NativeSocketBridge.getKeepAlive(fd));
-                case "setReuseAddress" -> boolSetter("Socket.setReuseAddress", value -> NativeSocketBridge.setReuseAddress(fd, value));
-                case "getReuseAddress" -> boolGetter("Socket.getReuseAddress", () -> NativeSocketBridge.getReuseAddress(fd));
-                case "setReceiveBufferSize" -> intSetter("Socket.setReceiveBufferSize", value -> NativeSocketBridge.setReceiveBufferSize(fd, value));
-                case "getReceiveBufferSize" -> intGetter("Socket.getReceiveBufferSize", () -> NativeSocketBridge.getReceiveBufferSize(fd));
-                case "setSendBufferSize" -> intSetter("Socket.setSendBufferSize", value -> NativeSocketBridge.setSendBufferSize(fd, value));
-                case "getSendBufferSize" -> intGetter("Socket.getSendBufferSize", () -> NativeSocketBridge.getSendBufferSize(fd));
-                case "setSoTimeout" -> intSetter("Socket.setSoTimeout", value -> NativeSocketBridge.setSoTimeout(fd, value));
-                case "getSoTimeout" -> intGetter("Socket.getSoTimeout", () -> NativeSocketBridge.getSoTimeout(fd));
+                case "setTcpNoDelay" -> boolSetter("Socket.setTcpNoDelay", value -> NativeSocketBridge.setTcpNoDelay(handle, value));
+                case "getTcpNoDelay" -> boolGetter("Socket.getTcpNoDelay", () -> NativeSocketBridge.getTcpNoDelay(handle));
+                case "setKeepAlive" -> boolSetter("Socket.setKeepAlive", value -> NativeSocketBridge.setKeepAlive(handle, value));
+                case "getKeepAlive" -> boolGetter("Socket.getKeepAlive", () -> NativeSocketBridge.getKeepAlive(handle));
+                case "setReuseAddress" -> boolSetter("Socket.setReuseAddress", value -> NativeSocketBridge.setReuseAddress(handle, value));
+                case "getReuseAddress" -> boolGetter("Socket.getReuseAddress", () -> NativeSocketBridge.getReuseAddress(handle));
+                case "setReceiveBufferSize" -> intSetter("Socket.setReceiveBufferSize", value -> NativeSocketBridge.setReceiveBufferSize(handle, value));
+                case "getReceiveBufferSize" -> intGetter("Socket.getReceiveBufferSize", () -> NativeSocketBridge.getReceiveBufferSize(handle));
+                case "setSendBufferSize" -> intSetter("Socket.setSendBufferSize", value -> NativeSocketBridge.setSendBufferSize(handle, value));
+                case "getSendBufferSize" -> intGetter("Socket.getSendBufferSize", () -> NativeSocketBridge.getSendBufferSize(handle));
+                case "setSoTimeout" -> intSetter("Socket.setSoTimeout", value -> NativeSocketBridge.setSoTimeout(handle, value));
+                case "getSoTimeout" -> intGetter("Socket.getSoTimeout", () -> NativeSocketBridge.getSoTimeout(handle));
                 case "setPerformancePreferences" -> (BuiltinCallable) args -> {
                     requireArity(args, 3, "Socket.setPerformancePreferences");
                     return OresNull.INSTANCE;
@@ -395,7 +395,7 @@ public final class OresNet {
                 throw arity("Socket.connect", "1 or 2", args.size());
             }
             final int connectTimeout = timeout;
-            fd = io(() -> NativeSocketBridge.connect(endpoint.host, endpoint.port, connectTimeout));
+            handle = io(() -> NativeSocketBridge.connectHandle(endpoint.host, endpoint.port, connectTimeout));
             connected = true;
             return OresNull.INSTANCE;
         }
@@ -441,14 +441,18 @@ public final class OresNet {
         }
 
         private void ensureConnected() {
-            if (!connected || closed || fd < 0) throw new IllegalStateException("socket is not connected");
+            if (!connected || closed || handle == null || !handle.isOpen()) {
+                throw new IllegalStateException("socket is not connected");
+            }
         }
 
         private void close() {
             if (closed) return;
             requireNetwork("Socket.close");
-            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(fd));
-            fd = -1;
+            NativeSocketHandle current = handle;
+            if (current != null && current.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(current));
+            }
             closed = true;
         }
     }
@@ -469,7 +473,7 @@ public final class OresNet {
                     requireArity(args, 0, "InputStream.available");
                     socket.ensureConnected();
                     requireNetwork("InputStream.available");
-                    return (long) io(() -> NativeSocketBridge.available(socket.fd));
+                    return (long) io(() -> NativeSocketBridge.available(socket.handle));
                 };
                 case "close" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "InputStream.close");
@@ -485,7 +489,7 @@ public final class OresNet {
             requireNetwork("InputStream.read");
             if (args.isEmpty()) {
                 byte[] one = new byte[1];
-                int count = io(() -> NativeSocketBridge.read(socket.fd, one, 0, 1));
+                int count = io(() -> NativeSocketBridge.read(socket.handle, one, 0, 1));
                 return count < 0 ? -1L : (long) (one[0] & 0xff);
             }
 
@@ -498,7 +502,7 @@ public final class OresNet {
             checkRange(target.size(), offset, length, "InputStream.read");
 
             byte[] bytes = new byte[target.size()];
-            int count = io(() -> NativeSocketBridge.read(socket.fd, bytes, offset, length));
+            int count = io(() -> NativeSocketBridge.read(socket.handle, bytes, offset, length));
             if (count > 0) {
                 for (int i = 0; i < count; i++) {
                     target.set(offset + i, (long) (bytes[offset + i] & 0xff));
@@ -565,7 +569,7 @@ public final class OresNet {
             while (written < length) {
                 int at = offset + written;
                 int remaining = length - written;
-                int count = io(() -> NativeSocketBridge.write(socket.fd, bytes, at, remaining));
+                int count = io(() -> NativeSocketBridge.write(socket.handle, bytes, at, remaining));
                 if (count <= 0) throw new IllegalStateException("native send returned " + count);
                 written += count;
             }
@@ -573,25 +577,25 @@ public final class OresNet {
     }
 
     private static final class ServerSocketValue extends NetworkValue {
-        private long fd;
-        private boolean bound;
-        private boolean closed;
+        private volatile NativeSocketHandle handle;
+        private volatile boolean bound;
+        private volatile boolean closed;
 
-        private ServerSocketValue(OresContext context, long fd, boolean bound) {
+        private ServerSocketValue(OresContext context, NativeSocketHandle handle, boolean bound) {
             super(context);
-            this.fd = fd;
+            this.handle = handle;
             this.bound = bound;
         }
 
         static ServerSocketValue unbound(OresContext context) {
-            return new ServerSocketValue(context, -1, false);
+            return new ServerSocketValue(context, null, false);
         }
 
         static ServerSocketValue bound(OresContext context, String host, int port, int backlog) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.ServerSocket.bind");
             checkPort(port, "net.ServerSocket.bind");
-            long fd = io(() -> NativeSocketBridge.listen(host, port, backlog, true));
-            return new ServerSocketValue(context, fd, true);
+            NativeSocketHandle handle = io(() -> NativeSocketBridge.listenHandle(host, port, backlog, true));
+            return new ServerSocketValue(context, handle, true);
         }
 
         @Override
@@ -602,7 +606,7 @@ public final class OresNet {
                     requireArity(args, 0, "ServerSocket.accept");
                     ensureBound();
                     requireNetwork("ServerSocket.accept");
-                    long accepted = io(() -> NativeSocketBridge.accept(fd));
+                    NativeSocketHandle accepted = io(() -> NativeSocketBridge.accept(handle));
                     return new SocketValue(context, accepted, true);
                 };
                 case "close" -> (BuiltinCallable) args -> {
@@ -621,54 +625,54 @@ public final class OresNet {
                 case "getInetAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getInetAddress");
                     ensureBound();
-                    String address = io(() -> NativeSocketBridge.localAddress(fd));
+                    String address = io(() -> NativeSocketBridge.localAddress(handle));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getLocalPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getLocalPort");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.localPort(fd));
+                    return (long) io(() -> NativeSocketBridge.localPort(handle));
                 };
                 case "getLocalSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getLocalSocketAddress");
                     ensureBound();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.localAddress(fd)),
-                            io(() -> NativeSocketBridge.localPort(fd)));
+                            io(() -> NativeSocketBridge.localAddress(handle)),
+                            io(() -> NativeSocketBridge.localPort(handle)));
                 };
                 case "setReuseAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setReuseAddress");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setReuseAddress(fd, boolArg(args, 0, "ServerSocket.setReuseAddress")));
+                    ioVoid(() -> NativeSocketBridge.setReuseAddress(handle, boolArg(args, 0, "ServerSocket.setReuseAddress")));
                     return OresNull.INSTANCE;
                 };
                 case "getReuseAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getReuseAddress");
                     ensureBound();
-                    return io(() -> NativeSocketBridge.getReuseAddress(fd));
+                    return io(() -> NativeSocketBridge.getReuseAddress(handle));
                 };
                 case "setReceiveBufferSize" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setReceiveBufferSize");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setReceiveBufferSize(fd, intArg(args, 0, "ServerSocket.setReceiveBufferSize")));
+                    ioVoid(() -> NativeSocketBridge.setReceiveBufferSize(handle, intArg(args, 0, "ServerSocket.setReceiveBufferSize")));
                     return OresNull.INSTANCE;
                 };
                 case "getReceiveBufferSize" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getReceiveBufferSize");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.getReceiveBufferSize(fd));
+                    return (long) io(() -> NativeSocketBridge.getReceiveBufferSize(handle));
                 };
                 case "setSoTimeout" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setSoTimeout");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, intArg(args, 0, "ServerSocket.setSoTimeout")));
+                    ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, intArg(args, 0, "ServerSocket.setSoTimeout")));
                     return OresNull.INSTANCE;
                 };
                 case "getSoTimeout" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getSoTimeout");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.getSoTimeout(fd));
+                    return (long) io(() -> NativeSocketBridge.getSoTimeout(handle));
                 };
                 default -> throw unknown("ServerSocket", name);
             };
@@ -680,20 +684,24 @@ public final class OresNet {
             if (args.size() != 1 && args.size() != 2) throw arity("ServerSocket.bind", "1 or 2", args.size());
             InetSocketAddressValue endpoint = addressArg(args, 0, "ServerSocket.bind");
             int backlog = args.size() == 2 ? intArg(args, 1, "ServerSocket.bind") : 50;
-            fd = io(() -> NativeSocketBridge.listen(endpoint.host, endpoint.port, backlog, true));
+            handle = io(() -> NativeSocketBridge.listenHandle(endpoint.host, endpoint.port, backlog, true));
             bound = true;
             return OresNull.INSTANCE;
         }
 
         private void ensureBound() {
-            if (!bound || closed || fd < 0) throw new IllegalStateException("server socket is not bound");
+            if (!bound || closed || handle == null || !handle.isOpen()) {
+                throw new IllegalStateException("server socket is not bound");
+            }
         }
 
         private void close() {
             if (closed) return;
             requireNetwork("ServerSocket.close");
-            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(fd));
-            fd = -1;
+            NativeSocketHandle current = handle;
+            if (current != null && current.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(current));
+            }
             closed = true;
         }
     }
@@ -1131,6 +1139,13 @@ public final class OresNet {
             if (location == null) return response;
 
             String nextUri = resolveRedirect(request.uri, location);
+            ParsedUri currentUri = ParsedUri.parse(request.uri);
+            ParsedUri redirectUri = ParsedUri.parse(nextUri);
+            if (redirects == Redirect.NORMAL
+                    && currentUri.scheme.equals("https")
+                    && !redirectUri.scheme.equals("https")) {
+                return response;
+            }
             String nextMethod = request.method;
             byte[] nextBody = request.body;
             if (response.statusCode == 303
@@ -1140,8 +1155,21 @@ public final class OresNet {
                 nextBody = new byte[0];
             }
 
+            Map<String, List<String>> nextHeaders = request.headers;
+            if (!sameAuthority(currentUri, redirectUri)) {
+                LinkedHashMap<String, List<String>> sanitized = new LinkedHashMap<>();
+                request.headers.forEach((name, values) -> {
+                    String lower = name.toLowerCase(Locale.ROOT);
+                    if (!lower.equals("authorization")
+                            && !lower.equals("proxy-authorization")
+                            && !lower.equals("cookie")) {
+                        sanitized.put(name, values);
+                    }
+                });
+                nextHeaders = Collections.unmodifiableMap(sanitized);
+            }
             HttpRequestValue next = new HttpRequestValue(
-                    context, nextUri, nextMethod, nextBody, request.headers,
+                    context, nextUri, nextMethod, nextBody, nextHeaders,
                     request.timeoutMillis, request.expectContinue, request.version);
             return sendFollowingRedirects(next, handler, response, redirectCount + 1);
         }
@@ -1159,16 +1187,22 @@ public final class OresNet {
                 throw new IllegalArgumentException("unsupported URI scheme: " + uri.scheme);
             }
 
-            int connectTimeout = connectTimeoutMillis;
-            long fd = io(() -> NativeSocketBridge.connect(uri.host, uri.port, connectTimeout));
+            int connectTimeout = request.timeoutMillis > 0
+                    ? request.timeoutMillis
+                    : connectTimeoutMillis;
+            NativeSocketHandle handle =
+                    io(() -> NativeSocketBridge.connectHandle(uri.host, uri.port, connectTimeout));
+            if (request.timeoutMillis > 0) {
+                ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
+            }
             try {
                 if (request.timeoutMillis > 0) {
-                    ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
+                    ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
                 }
 
                 byte[] wireRequest = encodeRequest(request, uri);
-                writeAll(fd, wireRequest);
-                byte[] wireResponse = readToEof(fd, MAX_RESPONSE_BYTES);
+                writeAll(handle, wireRequest);
+                byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
                 ParsedResponse parsed = parseResponse(wireResponse);
 
                 Object body = switch (handler.kind()) {
@@ -1187,7 +1221,7 @@ public final class OresNet {
                         request.uri,
                         HttpVersion.HTTP_1_1);
             } finally {
-                ioVoid(() -> NativeSocketBridge.close(fd));
+                ioVoid(() -> NativeSocketBridge.close(handle));
             }
         }
 
@@ -1220,21 +1254,21 @@ public final class OresNet {
             return result;
         }
 
-        private static void writeAll(long fd, byte[] bytes) {
+        private static void writeAll(NativeSocketHandle handle, byte[] bytes) {
             int offset = 0;
             while (offset < bytes.length) {
                 int at = offset;
-                int count = io(() -> NativeSocketBridge.write(fd, bytes, at, bytes.length - at));
+                int count = io(() -> NativeSocketBridge.write(handle, bytes, at, bytes.length - at));
                 if (count <= 0) throw new IllegalStateException("native send returned " + count);
                 offset += count;
             }
         }
 
-        private static byte[] readToEof(long fd, int limit) {
+        private static byte[] readToEof(NativeSocketHandle handle, int limit) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buffer = new byte[16 * 1024];
             while (true) {
-                int count = io(() -> NativeSocketBridge.read(fd, buffer, 0, buffer.length));
+                int count = io(() -> NativeSocketBridge.read(handle, buffer, 0, buffer.length));
                 if (count < 0) break;
                 if (out.size() + count > limit) {
                     throw new IllegalStateException("HTTP response exceeds " + limit + " bytes");
@@ -1516,16 +1550,38 @@ public final class OresNet {
 
         byte[] body = Arrays.copyOfRange(wire, headerEnd + 4, wire.length);
         String transferEncoding = firstHeader(headers, "transfer-encoding");
-        if (transferEncoding != null && transferEncoding.toLowerCase(Locale.ROOT).contains("chunked")) {
-            body = decodeChunked(body);
-        } else {
-            String contentLength = firstHeader(headers, "content-length");
-            if (contentLength != null) {
-                int length = Integer.parseInt(contentLength.trim());
-                if (length < body.length) body = Arrays.copyOf(body, length);
-                if (length > body.length) {
-                    throw new IllegalStateException("truncated HTTP response body");
+        List<String> contentLengths = headers.getOrDefault("content-length", List.of());
+        if (transferEncoding != null && !contentLengths.isEmpty()) {
+            throw new IllegalStateException("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
+        }
+        if (contentLengths.size() > 1) {
+            String expected = contentLengths.getFirst().trim();
+            for (String value : contentLengths) {
+                if (!expected.equals(value.trim())) {
+                    throw new IllegalStateException("conflicting Content-Length response headers");
                 }
+            }
+        }
+        if (transferEncoding != null) {
+            String normalized = transferEncoding.trim().toLowerCase(Locale.ROOT);
+            if (!normalized.equals("chunked")) {
+                throw new IllegalStateException("unsupported HTTP Transfer-Encoding: " + transferEncoding);
+            }
+            body = decodeChunked(body);
+        } else if (!contentLengths.isEmpty()) {
+            long parsedLength;
+            try {
+                parsedLength = Long.parseLong(contentLengths.getFirst().trim());
+            } catch (NumberFormatException error) {
+                throw new IllegalStateException("invalid Content-Length response header", error);
+            }
+            if (parsedLength < 0 || parsedLength > Integer.MAX_VALUE) {
+                throw new IllegalStateException("invalid Content-Length response header");
+            }
+            int length = (int) parsedLength;
+            if (length < body.length) body = Arrays.copyOf(body, length);
+            if (length > body.length) {
+                throw new IllegalStateException("truncated HTTP response body");
             }
         }
 
@@ -1579,6 +1635,12 @@ public final class OresNet {
 
     private static boolean isRedirect(int status) {
         return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    private static boolean sameAuthority(ParsedUri left, ParsedUri right) {
+        return left.scheme.equals(right.scheme)
+                && left.host.equalsIgnoreCase(right.host)
+                && left.port == right.port;
     }
 
     private static String resolveRedirect(String base, String location) {

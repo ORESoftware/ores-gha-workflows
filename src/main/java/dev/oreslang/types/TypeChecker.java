@@ -483,7 +483,8 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
-                    || name.name().equals("net") || name.name().equals("http")) {
+                    || name.name().equals("net") || name.name().equals("http")
+                    || name.name().equals("native_net")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
@@ -761,6 +762,9 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("native_net")) {
+                return nativeNetMember(member.member());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = deref(receiver);
@@ -1044,6 +1048,45 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
+    private Type nativeNetMember(String name) {
+        Type handle = new Named("NativeSocketHandle", List.of());
+        Type borrowedHandle = new Borrow(handle, false);
+        Type bytes = new ListType(Primitive.INT);
+        return switch (name) {
+            case "connect" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT),
+                    handle);
+            case "listen" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.BOOL),
+                    handle);
+            case "accept" -> new Function(List.of(borrowedHandle), handle);
+            case "read" -> new Function(
+                    List.of(borrowedHandle, bytes, Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "read_some" -> new Function(
+                    List.of(borrowedHandle, Primitive.INT),
+                    bytes);
+            case "write" -> new Function(
+                    List.of(borrowedHandle, bytes, Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "write_utf8" -> new Function(
+                    List.of(borrowedHandle, Primitive.STRING),
+                    Primitive.INT);
+            case "shutdown_input", "shutdown_output" ->
+                    new Function(List.of(borrowedHandle), Primitive.VOID);
+            case "close" -> new Function(List.of(handle), Primitive.VOID);
+            case "is_open" -> new Function(List.of(borrowedHandle), Primitive.BOOL);
+            case "remote_address", "local_address" ->
+                    new Function(List.of(borrowedHandle), Primitive.STRING);
+            case "remote_port", "local_port" ->
+                    new Function(List.of(borrowedHandle), Primitive.INT);
+            case "resolve_all" ->
+                    new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+            default -> throw new IllegalArgumentException(
+                    "unknown native_net primitive '" + name + "'");
+        };
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
         if (receiver instanceof Record record) {
@@ -1105,6 +1148,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (named.name().equals("NativeSocketHandle")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport NativeSocketHandle across an actor boundary; transfer transport ownership through the runtime");
+        }
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
@@ -1174,6 +1221,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("NativeSocketHandle")) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
