@@ -1681,6 +1681,26 @@ public final class TypeChecker {
             return;
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr lifecycleCall
+                    && lifecycleCall.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("process")
+                    && lifecycleCall.member().equals("collect_singleton")) {
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.NameExpr moduleName)) {
+                    throw new IllegalArgumentException(
+                            "process.collect_singleton expects exactly one singleton module namespace");
+                }
+                Ast.ModuleDecl target = modules.get(moduleName.name());
+                if (target == null || !target.singleton()) {
+                    throw new IllegalArgumentException(
+                            "process.collect_singleton target must be a singleton module: "
+                                    + moduleName.name());
+                }
+                // This is a lifecycle capability target, not extraction of a
+                // first-class singleton handle. The runtime consumes the module
+                // namespace syntactically and never materializes it as a value.
+                return;
+            }
             if (isExternalSingletonCall(call, currentModule)) {
                 throw new IllegalArgumentException("cross-singleton calls must be immediately awaited so they cannot outlive"
                         + " the caller context or leave an untracked mailbox wait");
