@@ -384,7 +384,39 @@ try {
 
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`Future<T>` is Oreslang's local asynchronous result handle. It is deliberately
+not actor-sendable and not shared-safe: a pending computation belongs to the
+execution domain that created it. `await future` is the only operation that
+extracts the future's result; Oreslang does not expose a blocking
+`Future.get()` / `join()` equivalent.
+
+The built-in `Futures` control-flow facade provides:
+
+```ores
+// first and second are Future<Response> values returned by an async API.
+val responses = await Futures.all([first, second]);
+```
+
+- `Futures.all([...])` returns one future, preserves input order, and fails if
+  one constituent future fails.
+- `Futures.race([...])` completes from the first constituent completion.
+- `future.is_done()`, `future.is_cancelled()`, and `future.cancel()` are
+  nonblocking state/control operations.
+- cancellation is cooperative with the host operation. A sandbox resource
+  permit is not considered free merely because guest code requested
+  cancellation; the underlying host operation must actually finish.
+
+For actor code, `await` is a **suspension point, never a carrier-thread
+blocking point**. Compiler backends must lower an incomplete actor await to a
+resumable continuation: the carrier returns to its dispatcher, the actor's
+current mailbox turn remains logically in progress, and no later mailbox
+message may mutate that actor's state until the continuation resumes and
+finishes. The reference JVM interpreter therefore rejects an incomplete
+actor-side `await` unless that continuation lowering is active rather than
+silently blocking a dispatcher worker.
+
+The scheduler remains separate from the language surface so actor isolation
+does not depend on a specific OS-thread implementation.
 
 ## Actors
 
@@ -426,6 +458,38 @@ untrusted actor RequestSandbox {
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
 - synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
 
+Actor callables are entry points, not ordinary functions. They are invoked only
+with `spawn`:
+
+```ores
+val pending = spawn worker(41);
+
+// Available synchronously after identity reservation + spawn admission.
+stdio.println(pending.id);
+
+// READY means the actor runtime has initialized the actor and its mailbox/control
+// endpoint. It does not mean worker() has finished.
+val ref = await pending.ready;
+
+// Equivalent readiness shorthand:
+val other_ref = await spawn worker(1);
+
+// Actor function completion is a separate future.
+val answer = await pending.result;
+```
+
+`spawn actor_fnc(...)` returns an `ActorSpawn<T>` ticket immediately after the
+runtime has reserved an `ActorId` and admitted the initial spawn/message. The
+fast path must not wait for actor behavior construction or actor-callable
+completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`, and for
+non-`void` actor functions `result: Future<T>`. Actor routines have no
+`result` member.
+
+`await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
+It never waits for the actor function/routine to finish. The ready reference
+exposes its stable `id` and a bounded mailbox/send capability. Ordinary
+`worker(...)` calls are compile errors when `worker` is declared `actor`.
+
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
 The slice has two simultaneous limits:
@@ -452,7 +516,23 @@ This preserves the central invariant:
 
 Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private, shared, or untrusted actor invalidates dependent compiled units.
 
-An untrusted actor cannot obtain ambient network access. For HTTP request handling, the host may instead bind exactly one accepted request/response exchange to the actor. The runtime exposes bounded, owner-only request-body and response-body stream capabilities through the actor turn context, allowing the HTTP server to stream directly from/to its socket or event-loop buffers without copying bulk body data through actor mailboxes. Body bytes and HTTP metadata have independent limits; request method/path/header access and response headers are bounded so metadata cannot be used to evade the body/mailbox quotas. When body data is staged in an actor-owned native block, the runtime can read/write that FFM-backed region directly through the HTTP capability without an intermediate heap byte array. The capability is deliberately higher-level than a raw fd so it remains safe for multiplexed HTTP/2 and HTTP/3 connections. HTTP capability handles themselves are non-Sendable and cannot escape through actor messages.
+An untrusted actor cannot obtain ambient network access. Its only permitted
+outbound network primitive is a host-owned **stateless HTTP/HTTPS capability**.
+The default hard per-actor limit is **5 in-flight outbound HTTP calls** and may
+be configured downward or upward by the supervisor within the runtime hard
+ceiling. The sixth call is rejected before it reaches the host transport; it is
+not hidden in an unbounded guest queue. `CONNECT`, WebSocket/protocol upgrades,
+non-HTTP schemes, raw TCP sockets, actor-visible connection-pool handles, cookie
+jars, and stateful session connections are forbidden. A host may reuse
+connections internally for normal HTTP efficiency, but that state never
+becomes an actor capability.
+
+This gives an untrusted actor useful I/O parallelism without letting it spawn
+more actors. It can start up to its HTTP limit, compose those futures with
+`Futures.all`, and suspend at `await`; the network operations continue while
+the actor consumes no carrier thread.
+
+For HTTP request handling, the host may instead bind exactly one accepted request/response exchange to the actor. The runtime exposes bounded, owner-only request-body and response-body stream capabilities through the actor turn context, allowing the HTTP server to stream directly from/to its socket or event-loop buffers without copying bulk body data through actor mailboxes. Body bytes and HTTP metadata have independent limits; request method/path/header access and response headers are bounded so metadata cannot be used to evade the body/mailbox quotas. When body data is staged in an actor-owned native block, the runtime can read/write that FFM-backed region directly through the HTTP capability without an intermediate heap byte array. The capability is deliberately higher-level than a raw fd so it remains safe for multiplexed HTTP/2 and HTTP/3 connections. HTTP capability handles themselves are non-Sendable and cannot escape through actor messages.
 
 If an untrusted actor is explicitly given an `ActorRef`, that grant authorizes bounded message sending, not lifecycle control: it cannot stop another actor or synchronously wait for another actor's termination. Prefer the narrower `Recipient<M>` capability for parent replies and one-way channels. A `Recipient<M>` can send only; it has no stop/wait/failure API and cannot cross into a different `ActorRuntime`. Supervisory control remains outside the untrusted actor.
 
