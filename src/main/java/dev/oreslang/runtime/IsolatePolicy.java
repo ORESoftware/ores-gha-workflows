@@ -67,15 +67,6 @@ public record IsolatePolicy(
         return new IsolatePolicy(Set.of(Capability.STDOUT), 128L * 1024 * 1024, 1024, Duration.ofSeconds(30), true);
     }
 
-    /**
-     * Default policy for a first-class UntrustedActor. Generic host powers are
-     * deliberately absent; request/response access is granted through narrow,
-     * owner-bound capabilities rather than NETWORK/filesystem/FFI authority.
-     */
-    public static IsolatePolicy untrustedActor() {
-        return new IsolatePolicy(Set.of(), 64L * 1024 * 1024, 128, Duration.ofSeconds(300), true);
-    }
-
     /** Restricted local/test baseline. FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(

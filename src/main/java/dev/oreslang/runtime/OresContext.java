@@ -38,8 +38,9 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        this.actors = ActorRuntime.processShared(
+        this.actors = new ActorRuntime(
                 isolatePolicy,
+                ActorRuntime.DispatcherConfig.defaults(),
                 this::executeActorTurn);
         this.garbageCollector = new RuntimeGarbageCollector();
         this.actors.setActorExitHook(garbageCollector::retireActorDomain);
@@ -89,16 +90,6 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
-        ActorRuntime carrierRuntime = ActorRuntime.currentActorRuntime();
-        if (carrierRuntime != null && carrierRuntime != actors) {
-            carrierRuntime.schedulerSafepoint();
-            return;
-        }
-        ActorRuntime rootRuntime = ActorRuntime.currentRootRuntime();
-        if (rootRuntime != null && rootRuntime != actors) {
-            rootRuntime.schedulerSafepoint();
-            return;
-        }
         actors.schedulerSafepoint();
     }
 
@@ -129,21 +120,7 @@ public final class OresContext implements AutoCloseable {
 
     private void executeActorTurn(Runnable turn) {
         boolean serialize = isolatePolicy.adversarial();
-        boolean lockHeld = false;
-        if (serialize) {
-            try {
-                // A watchdog must be able to wake a carrier that is queued
-                // behind another adversarial turn. ReentrantLock.lock() is not
-                // interruptible and would let one hostile turn pin every
-                // carrier waiting to enter this context.
-                adversarialActorTurnLock.lockInterruptibly();
-                lockHeld = true;
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new java.util.concurrent.CancellationException(
-                        "adversarial actor interrupted while waiting to enter its Truffle context");
-            }
-        }
+        if (serialize) adversarialActorTurnLock.lock();
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
         boolean entered = false;
@@ -153,7 +130,7 @@ public final class OresContext implements AutoCloseable {
             turn.run();
         } finally {
             if (entered) truffleContext.leave(null, previous);
-            if (lockHeld) adversarialActorTurnLock.unlock();
+            if (serialize) adversarialActorTurnLock.unlock();
         }
     }
 
