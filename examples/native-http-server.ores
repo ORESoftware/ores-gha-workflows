@@ -21,7 +21,7 @@ pub routine main() => void {
     115, 101, 13, 10, 13, 10, 79, 75
   ];
 
-  val written = native_net_api.write_all(&client, response, 100);
+  val written = native_net_api.write_all(&client, &response, 100);
   native_net_api.close(client);
   native_net_api.close(listener);
   return;
