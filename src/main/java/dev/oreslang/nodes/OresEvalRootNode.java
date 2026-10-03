@@ -8,6 +8,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.runtime.OresValues.Complex;
 import dev.oreslang.runtime.OresValues.OptionValue;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -266,6 +267,29 @@ public final class OresEvalRootNode extends RootNode {
                     (state, frozenArgs) -> transactionalSingletonCall(
                             state,
                             working -> callSingletonFunction(working, fn, frozenArgs)));
+        }
+
+        private CompletionStage<Object> readSingletonSymbol(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            ProcessSingletonRegistry.Handle<SingletonState> handle = singletonHandle(module);
+            return handle.call(
+                    List.of(),
+                    context.isolatePolicy().maxMailboxMessages(),
+                    context.actors().remainingCurrentActorWallTime(context.isolatePolicy().maxWallTime()),
+                    (state, ignored) -> {
+                        String currentSchema = singletonSchema(module);
+                        if (!state.schema.equals(currentSchema)) {
+                            throw new IllegalStateException("singleton module state schema changed for "
+                                    + module.name()
+                                    + "; process-lifetime state cannot be reinterpreted without an explicit migration");
+                        }
+                        authorizeSingletonCodeGeneration(state, module);
+                        Object value = state.fields.lookup(field.name());
+                        if (!(value instanceof OresSymbol)) {
+                            throw new IllegalStateException("singleton Symbol field changed type for "
+                                    + module.name() + "." + field.name());
+                        }
+                        return value;
+                    });
         }
 
         private Object transactionalSingletonCall(
@@ -578,6 +602,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    return OresSymbol.processLiteral(symbol.name(), context.isolatePolicy());
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -585,6 +612,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("Symbol")) return new SymbolFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -700,6 +728,31 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr lifecycleCall
+                        && lifecycleCall.receiver() instanceof Ast.NameExpr receiverName
+                        && receiverName.name().equals("process")
+                        && lifecycleCall.member().equals("collect_singleton")) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "process.collect_singleton expects exactly one singleton module");
+                    }
+                    Ast.Expr target = call.arguments().getFirst();
+                    if (!(target instanceof Ast.NameExpr moduleName)) {
+                        throw new IllegalArgumentException(
+                                "process.collect_singleton expects a singleton module namespace, not a runtime value");
+                    }
+                    Ast.ModuleDecl module = modules.get(moduleName.name());
+                    if (module == null || !module.singleton()) {
+                        throw new IllegalArgumentException(
+                                "process.collect_singleton target must be a singleton module: "
+                                        + moduleName.name());
+                    }
+                    context.requireCapability(
+                            IsolatePolicy.Capability.PROCESS_SINGLETON,
+                            "process.collect_singleton");
+                    ProcessSingletonRegistry.requireBackendFor(context.graalIsolated());
+                    return ProcessSingletonRegistry.collect(singletonKey(module));
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -747,6 +800,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Symbol")) {
+                    if (!created.type().arguments().isEmpty() || created.arguments().size() != 1) {
+                        throw new IllegalArgumentException("new Symbol(...) expects exactly one UUID String");
+                    }
+                    Object key = eval(created.arguments().getFirst(), env);
+                    if (!(key instanceof String text)) {
+                        throw new IllegalArgumentException("new Symbol(...) key must be a String");
+                    }
+                    // Backward-compatible constructor syntax denotes a persistence-safe Symbol.
+                    return OresSymbol.stable(text, context.isolatePolicy());
+                }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 Ast.ModuleDecl owner = ownerModule(klass);
@@ -833,6 +897,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof SymbolFacade symbols) {
+                return switch (name) {
+                    case "local" -> (Invokable) symbols::local;
+                    case "process" -> (Invokable) symbols::process;
+                    case "stable" -> (Invokable) symbols::stable;
+                    default -> throw new IllegalArgumentException("unknown Symbol member " + name);
                 };
             }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace, name);
@@ -1019,9 +1091,14 @@ public final class OresEvalRootNode extends RootNode {
                             if (local == Env.MISSING) throw new IllegalStateException("missing singleton field " + module.name() + "." + name);
                             return local;
                         }
+                        if (field.type() != null
+                                && field.type().name().equals("Symbol")
+                                && field.type().arguments().isEmpty()) {
+                            return new SingletonReply(readSingletonSymbol(module, field));
+                        }
                         Ast.ClassDecl klass = field.type() == null ? null : findClass(field.type().name());
                         if (klass == null) {
-                            throw new IllegalArgumentException("singleton module exports only class-instance proxy fields: "
+                            throw new IllegalArgumentException("singleton module exports only class-instance proxy or Symbol fields: "
                                     + module.name() + "." + name);
                         }
                         return new SingletonObjectProxy(module, field.name(), klass);
@@ -1240,6 +1317,13 @@ public final class OresEvalRootNode extends RootNode {
                 || value instanceof Character
                 || value instanceof Complex) {
             return value;
+        }
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.processStable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot be stored in process-singleton state");
+            }
+            return symbol;
         }
         Object existing = copies.get(value);
         if (existing != null) return existing;
@@ -1508,6 +1592,23 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+    }
+    private record SymbolFacade(OresContext context) {
+        private String key(List<Object> args,String api){
+            requireOne(args,api);
+            Object key=args.getFirst();
+            if(!(key instanceof String text))throw new IllegalArgumentException(api+" expects one String key");
+            return text;
+        }
+        private Object local(List<Object> args){
+            return OresSymbol.local(key(args,"Symbol.local"),context.actors(),context.isolatePolicy());
+        }
+        private Object process(List<Object> args){
+            return OresSymbol.process(key(args,"Symbol.process"),context.isolatePolicy());
+        }
+        private Object stable(List<Object> args){
+            return OresSymbol.stable(key(args,"Symbol.stable"),context.isolatePolicy());
+        }
     }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }
