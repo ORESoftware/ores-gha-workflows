@@ -150,8 +150,9 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary ;
+unary           = ( "!" | "-" | "+" | "await" | "spawn" ) unary
+                | "&" [ "mut" ] unary
+                | postfix ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
