@@ -482,7 +482,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
+                    || name.name().equals("net") || name.name().equals("http")) {
+                return new Named(name.name(), List.of());
+            }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -1053,7 +1056,7 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
-                    Type pattern = classFieldType(field.owner(), field.field());
+                    Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
             }
@@ -1208,7 +1211,7 @@ public final class TypeChecker {
             // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(
-                        classFieldType(klass, field),
+                        resolve(field.type(), classGenerics, nominal),
                         classBindings);
                 if (!isSharedSafe(fieldType, seen, classBindings)) return false;
             }
@@ -1495,7 +1498,10 @@ public final class TypeChecker {
         Set<String> classGenericNames = Set.copyOf(klass.genericParameters());
         for (int i = 0; i < arguments.size(); i++) {
             ResolvedField resolvedField = fields.get(i);
-            Type fieldPattern = classFieldType(resolvedField.owner(), resolvedField.field());
+            Type fieldPattern = resolve(
+                    resolvedField.field().type(),
+                    Set.copyOf(resolvedField.owner().genericParameters()),
+                    resolvedField.ownerType());
             fieldPattern = substituteGenerics(
                     fieldPattern,
                     classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));

@@ -11,6 +11,9 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.BuiltinCallable;
+import dev.oreslang.runtime.BuiltinValue;
+import dev.oreslang.net.OresNet;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -62,22 +65,18 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, INIT_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(current::initialize);
+            return current.initialize();
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return context.actors().executeRootTask(
-                    () -> current.executeMain(new Object[0]));
+            return current.executeMain(new Object[0]);
         }
 
-        // Root/main guest execution belongs to the SHARED carrier domain. Keep
-        // link metadata installation outside the pool, then run init + main as
-        // one ordered root task so main never races its own initialization.
+        // Backward-compatible single-source execution. Multi-file hosts use
+        // link/init/main commands to install a full import graph before init.
         current.link();
-        return context.actors().executeRootTask(() -> {
-            current.initialize();
-            return current.executeMain(arguments);
-        });
+        current.initialize();
+        return current.executeMain(arguments);
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -192,9 +191,6 @@ public final class OresEvalRootNode extends RootNode {
                 case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
-                case UNTRUSTED -> throw new SecurityException(
-                        "untrusted actor callables require GraalWasm sandbox lowering; "
-                                + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
             return context.actors().invoke(
@@ -274,12 +270,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
-            // Every actor kind observes stop/turn-overrun signals at statement
-            // boundaries. UNTRUSTED actors additionally consume fuel here and
-            // at expression boundaries below.
-            if (ActorRuntime.inActorExecution() || ActorRuntime.inRootExecution()) {
-                context.schedulerSafepoint();
-            }
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -325,7 +315,6 @@ public final class OresEvalRootNode extends RootNode {
                 catch (ReturnSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
-                    if (ActorRuntime.isActorControlAbort(failure)) throw failure;
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                     executeBlock(tried.catchBody(), catchEnv);
@@ -354,9 +343,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
-            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
-                context.schedulerSafepoint();
-            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -366,6 +352,8 @@ public final class OresEvalRootNode extends RootNode {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
+                if (name.name().equals("net")) return OresNet.netPackage(context);
+                if (name.name().equals("http")) return OresNet.httpPackage(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -559,6 +547,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name) {
+            if (receiver instanceof BuiltinValue builtin) {
+                Object value = builtin.member(name);
+                if (value instanceof BuiltinCallable callable) return (Invokable) callable::call;
+                return value;
+            }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
@@ -1052,13 +1045,6 @@ public final class OresEvalRootNode extends RootNode {
             if (left instanceof Number a && right instanceof Number b) return Double.compare(a.doubleValue(), b.doubleValue());
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
-        }
-
-        private long integral(Object value, String operator) {
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
-                return ((Number) value).longValue();
-            }
-            throw new IllegalArgumentException(operator + " requires integer operands");
         }
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }

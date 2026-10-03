@@ -29,6 +29,19 @@ import java.util.Map;
 public final class LinkedProgramRunner {
     private LinkedProgramRunner() { }
 
+    /**
+     * Parses, links, and type-checks the reachable source graph without
+     * creating a guest context or executing init/main code.
+     */
+    public static IncrementalCompiler.BuildResult validate(Path entryFile) throws IOException {
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+
+        LinkedHashMap<String, String> sources = new LinkedHashMap<>();
+        collectRelativeImportClosure(entry, sources);
+        return new IncrementalCompiler().compile(sources);
+    }
+
     public static IncrementalCompiler.BuildResult run(
             Path entryFile,
             IsolatePolicy policy,

@@ -180,13 +180,10 @@ public final class CapabilityChecker {
     }
 
     private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
-        return switch (kind) {
-            case PRIVATE -> parent.withoutCapabilities(
-                    IsolatePolicy.Capability.SHARED_MEMORY,
-                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
-            case UNTRUSTED -> IsolatePolicy.untrustedActor();
-            default -> parent;
-        };
+        if (kind != Ast.ActorKind.PRIVATE) return parent;
+        return parent.withoutCapabilities(
+                IsolatePolicy.Capability.SHARED_MEMORY,
+                IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
     }
 
     private void checkCallableTypes(
@@ -308,7 +305,9 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
                 if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
-                if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
+                if (path.startsWith("network.") || path.startsWith("net.") || path.startsWith("http.")) {
+                    require(policy, IsolatePolicy.Capability.NETWORK, path);
+                }
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
                 if (path.startsWith("env.")) require(policy, IsolatePolicy.Capability.ENVIRONMENT, path);
