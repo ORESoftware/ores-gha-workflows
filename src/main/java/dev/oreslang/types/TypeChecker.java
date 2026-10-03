@@ -945,7 +945,11 @@ public final class TypeChecker {
                             self,
                             label),
                     label);
-            return new Named("ActorSpawn", List.of(result));
+            Type message = new Tuple(
+                    call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList());
+            return new Named("ActorSpawn", List.of(message, result));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
@@ -953,8 +957,8 @@ public final class TypeChecker {
                 return named.arguments().getFirst();
             }
             if (awaitedType instanceof Named named && named.name().equals("ActorSpawn")
-                    && named.arguments().size() == 1) {
-                return new Named("ActorRef", List.of());
+                    && named.arguments().size() == 2) {
+                return new Named("ActorRef", List.of(named.arguments().getFirst()));
             }
             return Unknown.INSTANCE;
         }
@@ -1367,18 +1371,19 @@ public final class TypeChecker {
 
     private Type builtinActorHandleMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
-            Type result = named.arguments().getFirst();
+        if (named.name().equals("ActorSpawn") && named.arguments().size() == 2) {
+            Type message = named.arguments().get(0);
+            Type result = named.arguments().get(1);
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
                 case "ready" -> new Named(
                         "Future",
-                        List.of(new Named("ActorRef", List.of())));
+                        List.of(new Named("ActorRef", List.of(message))));
                 case "done" -> new Named("Future", List.of(Primitive.BOOL));
                 case "result" -> {
                     if (result == Primitive.VOID) {
                         throw new IllegalArgumentException(
-                                "actor routine spawn has no result value; await the spawn itself for readiness");
+                                "actor routine spawn has no result value; await spawn.done for completion");
                     }
                     yield new Named("Future", List.of(result));
                 }
@@ -1386,16 +1391,17 @@ public final class TypeChecker {
                         "unknown ActorSpawn member '" + member + "'");
             };
         }
-        if (named.name().equals("ActorRef") && named.arguments().isEmpty()) {
+        if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
+            Type message = named.arguments().getFirst();
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
-                case "mailbox" -> new Named("ActorMailbox", List.of());
+                case "mailbox" -> new Named("ActorMailbox", List.of(message));
                 default -> null;
             };
         }
-        if (named.name().equals("ActorMailbox") && named.arguments().isEmpty()
+        if (named.name().equals("ActorMailbox") && named.arguments().size() == 1
                 && member.equals("send")) {
-            return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            return new Function(List.of(named.arguments().getFirst()), Primitive.VOID);
         }
         return null;
     }
