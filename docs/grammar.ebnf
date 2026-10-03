@@ -135,6 +135,7 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | symbol_literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -159,6 +160,7 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
+symbol_literal  = ":" IDENT ;
 
 type_ref        = borrow_type
                 | named_type
@@ -207,8 +209,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Singleton bindings are actor-private by default. A public val/const class
      instance may be exported as a typed proxy capability; the raw object never
      crosses the singleton actor boundary and its method calls are request/reply.
-   - Other public singleton-module fields are illegal. Singleton state fields require
-     explicit process-stable types and context-free initializers.
+   - Other public singleton-module fields are illegal except immutable val/const
+     Symbol identities. External Symbol reads are asynchronous singleton-mailbox
+     operations and must be immediately awaited.
+   - Singleton state fields require explicit process-stable types and context-free initializers.
    - Public singleton functions are actor transport boundaries: generic/async
      exports, mut/structural parameters, borrows, classes, and function/closure
      values are rejected until explicit Send constraints exist.
