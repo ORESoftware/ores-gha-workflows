@@ -45,10 +45,37 @@ define module native_net_api
     return native_net.write(handle, bytes, offset, length);
   }
 
-  pub fnc write_utf8(
+  fnc write_all_from(
       &NativeSocketHandle handle,
-      string text) => int {
-    return native_net.write_utf8(handle, text);
+      Array<int> bytes,
+      int offset,
+      int length) => int {
+    if offset >= length; do
+      return offset;
+    fi
+
+    val written = native_net.write(
+        handle,
+        bytes,
+        offset,
+        length - offset);
+
+    if written <= 0; do
+      return -1;
+    fi
+
+    return write_all_from(
+        handle,
+        bytes,
+        offset + written,
+        length);
+  }
+
+  pub fnc write_all(
+      &NativeSocketHandle handle,
+      Array<int> bytes,
+      int length) => int {
+    return write_all_from(handle, bytes, 0, length);
   }
 
   pub fnc shutdown_input(&NativeSocketHandle handle) => void {
