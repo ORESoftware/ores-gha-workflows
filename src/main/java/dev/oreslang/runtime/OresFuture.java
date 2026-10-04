@@ -149,6 +149,14 @@ public final class OresFuture<T> implements Future<T> {
         return state.get() != PENDING;
     }
 
+    /**
+     * Read-only compatibility observation used by runtime/tests. Cancellation
+     * remains distinct from exceptional completion, matching CompletableFuture.
+     */
+    public boolean isCompletedExceptionally() {
+        return state.get() instanceof Failure;
+    }
+
     @Override
     public T get() throws InterruptedException, ExecutionException {
         Object observed = awaitState(0L, null);
