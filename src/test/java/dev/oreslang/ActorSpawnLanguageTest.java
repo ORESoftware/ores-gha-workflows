@@ -218,6 +218,18 @@ final class ActorSpawnLanguageTest {
     }
 
     @Test
+    void untrustedActorCannotInspectForeignActorLiveness() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub untrusted actor fnc probe(ActorRef target) => bool {
+                          return target.is_alive();
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("lifecycle"));
+    }
+
+    @Test
     void trustedActorMaySpawnWithoutSynchronouslyWaiting() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc child() => int {
