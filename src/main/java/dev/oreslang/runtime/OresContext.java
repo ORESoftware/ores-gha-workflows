@@ -171,7 +171,7 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         try {
-            actors.close();
+            actors.closeFromSupervisor();
         } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
