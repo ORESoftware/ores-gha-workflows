@@ -763,8 +763,11 @@ final class ActorRuntimeTest {
             assertFalse(closer.isAlive(), "runtime close must not wait for user code holding a SyncCell lock");
             assertInstanceOf(IllegalStateException.class, closeFailure.get());
             assertTrue(closeFailure.get().getMessage().contains("full actor termination"));
-            assertTrue(cell.closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            // A timed-out close must not tear shared state out from under a
+            // still-running actor. Cleanup is completed by the retry after the
+            // actor releases the user-held lock and fully terminates.
+            assertFalse(cell.closed());
+            assertTrue(runtime.sharedMemoryBytes() > 0L);
         } finally {
             release.countDown();
             closer.join(2000);
@@ -772,6 +775,8 @@ final class ActorRuntimeTest {
 
         assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
         assertDoesNotThrow(runtime::close);
+        assertTrue(cell.closed());
+        assertEquals(0L, runtime.sharedMemoryBytes());
     }
 
 
