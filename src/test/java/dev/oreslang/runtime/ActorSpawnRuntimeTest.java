@@ -88,6 +88,9 @@ final class ActorSpawnRuntimeTest {
             ActorRuntime.ActorRef<String> ref = spawn.ready().get(2, TimeUnit.SECONDS);
             assertEquals(spawn.id(), ref.id());
             assertEquals("ok", spawn.result().get(2, TimeUnit.SECONDS));
+            assertFalse(
+                    ref.isAlive(),
+                    "published result must imply the one-shot actor has fully finalized");
         }
     }
 
