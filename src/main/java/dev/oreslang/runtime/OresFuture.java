@@ -150,11 +150,12 @@ public final class OresFuture<T> implements Future<T> {
     }
 
     /**
-     * Read-only compatibility observation used by runtime/tests. Cancellation
-     * remains distinct from exceptional completion, matching CompletableFuture.
+     * Read-only compatibility observation used by runtime/tests. As with
+     * CompletableFuture, cancellation is also an exceptional terminal state.
      */
     public boolean isCompletedExceptionally() {
-        return state.get() instanceof Failure;
+        Object observed = state.get();
+        return observed instanceof Failure || observed instanceof Cancelled;
     }
 
     @Override

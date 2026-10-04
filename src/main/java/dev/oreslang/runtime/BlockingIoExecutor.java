@@ -88,7 +88,9 @@ final class BlockingIoExecutor implements AutoCloseable {
                         .name(threadPrefix + "native-blocking-", 0)
                         .factory(),
                 new ThreadPoolExecutor.AbortPolicy());
-        this.nativeBlocking.prestartAllCoreThreads();
+        // Deliberately lazy: OresVM.PROCESS is a static runtime kernel object.
+        // Prestarting platform threads here would capture live build-host
+        // threads in GraalVM Native Image's image heap.
     }
 
     <T> OresFuture<T> submit(Kind kind, Callable<? extends T> operation) {
