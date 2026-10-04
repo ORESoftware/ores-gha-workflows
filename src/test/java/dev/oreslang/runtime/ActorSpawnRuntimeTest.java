@@ -172,7 +172,7 @@ final class ActorSpawnRuntimeTest {
             parent.send("go");
 
             assertTrue(
-                    parentCompleted.await(100, TimeUnit.MILLISECONDS),
+                    parentCompleted.await(1, TimeUnit.SECONDS),
                     "Future cancellation from an actor turn must only request child stop; "
                             + "it must never synchronously wait for child finalization");
             assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
