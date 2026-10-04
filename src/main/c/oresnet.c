@@ -87,8 +87,18 @@ static int create_stream_socket(int family, int type, int protocol) {
     return fd;
 }
 
+static int restore_fd_flags(int fd, int original_flags, int prior_error) {
+    if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
+    errno = prior_error;
+    return 0;
+}
+
 static int connect_one(int fd, const struct sockaddr *address, socklen_t length, jint timeout_ms) {
-    if (timeout_ms <= 0) {
+    if (timeout_ms < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (timeout_ms == 0) {
         while (connect(fd, address, length) < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -102,13 +112,11 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
 
     int result = connect(fd, address, length);
     if (result == 0) {
-        if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
-        return 0;
+        return restore_fd_flags(fd, original_flags, 0);
     }
     if (errno != EINPROGRESS) {
         int saved = errno;
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = saved;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
         return -1;
     }
 
@@ -122,14 +130,12 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
     } while (result < 0 && errno == EINTR);
 
     if (result == 0) {
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = ETIMEDOUT;
+        if (restore_fd_flags(fd, original_flags, ETIMEDOUT) < 0) return -1;
         return -1;
     }
     if (result < 0) {
         int saved = errno;
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = saved;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
         return -1;
     }
 
@@ -137,17 +143,12 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
     socklen_t error_length = sizeof(socket_error);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) < 0) {
         int saved = errno;
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = saved;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
         return -1;
     }
 
-    if (socket_error != 0) {
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = socket_error;
-        return -1;
-    }
-    if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
+    if (restore_fd_flags(fd, original_flags, socket_error) < 0) return -1;
+    if (socket_error != 0) return -1;
     return 0;
 }
 
@@ -701,6 +702,22 @@ Java_dev_oreslang_net_NativeSocketBridge_setSendTimeout(
     if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value)) < 0) {
         throw_errno(env, "setsockopt(SO_SNDTIMEO)");
     }
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_oreslang_net_NativeSocketBridge_getSendTimeout(
+        JNIEnv *env, jclass cls, jlong raw_fd) {
+    (void)cls;
+    struct timeval value;
+    socklen_t length = sizeof(value);
+    int fd = require_fd(env, raw_fd, "getsockopt(SO_SNDTIMEO)");
+    if (fd < 0) return -1;
+    if (getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, &length) < 0) {
+        throw_errno(env, "getsockopt(SO_SNDTIMEO)");
+        return -1;
+    }
+    long millis = value.tv_sec * 1000L + value.tv_usec / 1000L;
+    return (jint)millis;
 }
 
 JNIEXPORT jint JNICALL

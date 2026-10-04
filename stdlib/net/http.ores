@@ -11,7 +11,9 @@ define module http_wire
   }
 
   pub fnc supported_scheme(string scheme) => bool {
-    return scheme == "http" || scheme == "https";
+    // HTTPS becomes true only when the native TLS transport is implemented.
+    // Never silently send plaintext to port 443.
+    return scheme == "http";
   }
 
   pub fnc default_port(string scheme) => int {
@@ -58,12 +60,14 @@ define module http_wire
 
   pub fnc redirect_policy_allows(
       string policy,
-      bool same_authority) => bool {
+      bool secure_downgrade) => bool {
     if policy == "NEVER"; do
       return false;
     fi
     if policy == "NORMAL"; do
-      return same_authority;
+      // NORMAL follows redirects except HTTPS -> HTTP downgrade. Cross-origin
+      // redirects remain allowed, but credentials are stripped separately.
+      return !secure_downgrade;
     fi
     if policy == "ALWAYS"; do
       return true;

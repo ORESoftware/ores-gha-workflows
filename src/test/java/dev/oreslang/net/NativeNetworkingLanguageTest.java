@@ -2,6 +2,7 @@ package dev.oreslang.net;
 
 import dev.oreslang.OresLanguage;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -413,6 +414,134 @@ final class NativeNetworkingLanguageTest {
         server.join(5_000);
     }
 
+
+    @Test
+    void adversarialNetworkCapabilityCannotUseRawSocketSurfaces() throws Exception {
+        IsolatePolicy contextPolicy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+        IsolatePolicy adversarialActorPolicy = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+
+        try (ActorRuntime runtime = new ActorRuntime(contextPolicy)) {
+            var ref = runtime.<String>spawnPrivate(
+                    adversarialActorPolicy,
+                    factoryContext -> (message, actorContext) ->
+                            NetworkAdmission.rejectAdversarial(
+                                    IsolatePolicy.developer()
+                                            .withCapabilities(IsolatePolicy.Capability.NETWORK),
+                                    ActorRuntime.currentActorPolicy(),
+                                    "test.raw-network"));
+
+            ref.send("check");
+            assertTrue(ref.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+            Throwable failure = ref.failure().orElseThrow();
+            assertInstanceOf(SecurityException.class, failure);
+            assertTrue(failure.getMessage().contains("bounded stateless HTTP"), failure::getMessage);
+        }
+
+        String nativeBuiltin = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/java/dev/oreslang/net/NativeNetBuiltin.java"));
+        String publicNet = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/java/dev/oreslang/net/OresNet.java"));
+        assertTrue(nativeBuiltin.contains("NetworkAdmission.requireRawNetwork"));
+        assertTrue(publicNet.contains("NetworkAdmission.requireRawNetwork"));
+    }
+
+    @Test
+    void malformedChunkTrailerFailsClosed() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "1\r\nx\r\n"
+                        + "0\r\n"
+                        + "broken-trailer\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-malformed-trailer-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("malformed chunk trailer"), error::toString);
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
+    void patchRequestCarriesContentLength() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("PATCH /patch HTTP/1.1"));
+                assertEquals(3, headerInt(headers, "content-length"));
+                byte[] body = new byte[3];
+                readExactly(client, body);
+                assertEquals("abc", new String(body, StandardCharsets.UTF_8));
+                writeAll(client, ("HTTP/1.1 204 No Content\r\n"
+                        + "Content-Length: 0\r\n"
+                        + "Connection: close\r\n\r\n")
+                        .getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-patch-content-length-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val builder = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/patch");
+                    val request = builder.method(
+                        "PATCH",
+                        net.http.HttpRequest.BodyPublishers.ofString("abc")
+                    ).build();
+                    val response = net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.discarding());
+                    stdio.println(response.statusCode());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        String output = evaluate(program);
+        assertTrue(output.contains("204"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+        if (failure.get() != null) fail("server failed", failure.get());
+    }
 
     @Test
     void networkingImplementationKeepsProtocolEngineOutOfJava() throws Exception {

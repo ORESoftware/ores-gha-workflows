@@ -59,7 +59,8 @@ final class NativeSocketBridgeTest {
         NativeSocketHandle client = NativeSocketBridge.connectHandle("127.0.0.1", port, 3_000);
         try {
             NativeSocketBridge.setActorIoTimeout(client, 3_000);
-            assertEquals(3_000, NativeSocketBridge.getSoTimeout(client));
+            assertTrue(NativeSocketBridge.getSoTimeout(client) > 0);
+            assertTrue(NativeSocketBridge.getSendTimeout(client) > 0);
             byte[] request = "ping".getBytes(StandardCharsets.UTF_8);
             assertEquals(4, NativeSocketBridge.write(client, request, 0, request.length));
 

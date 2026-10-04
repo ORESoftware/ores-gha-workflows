@@ -155,9 +155,7 @@ public final class NativeNetBuiltin implements BuiltinValue {
     }
 
     private void admit(String operation) {
-        context.requireCapability(
-                IsolatePolicy.Capability.NETWORK,
-                "native_net." + operation);
+        NetworkAdmission.requireRawNetwork(context, "native_net." + operation);
     }
 
     private static void require(List<Object> args, int count, String operation) {
