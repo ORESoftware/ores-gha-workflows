@@ -1699,14 +1699,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (running == null) return;
             if (!deadlineExpired.compareAndSet(false, true)) return;
 
+            CancellationException timeout = new CancellationException(
+                    "root/main process exceeded max wall time "
+                            + policyCeiling.maxWallTime());
+            if (!completion.completeExceptionally(timeout)) {
+                // Normal completion or another terminal failure already won.
+                // Do not report a phantom overrun or interrupt a carrier that
+                // is merely unwinding after a completed root task.
+                return;
+            }
+
             sharedOverrunTurns.incrementAndGet();
             if (compensationClaimed.compareAndSet(false, true)
                     && !claimCompensatingThread(ActorKind.SHARED)) {
                 compensationClaimed.set(false);
             }
-            completion.completeExceptionally(new CancellationException(
-                    "root/main process exceeded max wall time "
-                            + policyCeiling.maxWallTime()));
             running.interrupt();
         }
 
