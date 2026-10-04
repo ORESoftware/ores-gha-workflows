@@ -2907,6 +2907,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         IsolatePolicy policy = defaultSpawnPolicy();
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
+        AtomicReference<R> invocationResult = new AtomicReference<>();
+        AtomicReference<Throwable> invocationFailure = new AtomicReference<>();
+        AtomicBoolean invocationFinished = new AtomicBoolean();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
             if (ref != null) requestStop(ref.id());
@@ -2919,21 +2922,27 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         @SuppressWarnings("unchecked")
                         R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        completion.completeFromRuntime(frozen);
+                        invocationResult.set(frozen);
+                        invocationFinished.set(true);
                     } catch (VirtualMachineError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (Exception failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.set(failure);
+                        invocationFinished.set(true);
                         throw failure;
                     } catch (Error failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.set(failure);
+                        invocationFinished.set(true);
                         throw failure;
                     } finally {
                         turnContext.self().stop();
@@ -2949,6 +2958,22 @@ public final class ActorRuntime implements AutoCloseable {
         });
         ref.termination().whenComplete((normalTermination, terminationFailure) -> {
             if (completion.isDone()) return;
+
+            // Publish a callable result only after the one-shot actor turn has
+            // fully left guest execution and finalized. This makes awaiting
+            // spawn.result a safe lifecycle boundary for embedders: once it
+            // resumes, the child no longer owns the polyglot context on a
+            // carrier thread.
+            if (invocationFinished.get()) {
+                Throwable callFailure = invocationFailure.get();
+                if (callFailure != null) {
+                    completion.failFromRuntime(callFailure);
+                } else {
+                    completion.completeFromRuntime(invocationResult.get());
+                }
+                return;
+            }
+
             if (terminationFailure != null) {
                 completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
             } else {
