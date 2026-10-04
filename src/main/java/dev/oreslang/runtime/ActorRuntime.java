@@ -1409,6 +1409,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedRejectedTurns;
     private final AtomicLong untrustedRejectedTurns;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    private final ThreadLocal<RootTask<?>> currentRootTask = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
     public ActorRuntime() {
@@ -1620,6 +1621,7 @@ public final class ActorRuntime implements AutoCloseable {
         private volatile Thread carrier;
         private volatile ScheduledFuture<?> deadlineFuture;
         private final AtomicBoolean compensationClaimed = new AtomicBoolean();
+        private final AtomicBoolean deadlineExpired = new AtomicBoolean();
         private volatile long deadlineNanos = Long.MAX_VALUE;
 
         private RootTask(Supplier<T> task) {
@@ -1632,6 +1634,7 @@ public final class ActorRuntime implements AutoCloseable {
             carrier = Thread.currentThread();
             ACTOR_CARRIER.set(Boolean.TRUE);
             CURRENT_ROOT_RUNTIME.set(ActorRuntime.this);
+            currentRootTask.set(this);
             deadlineNanos = rootDeadlineNanos();
             CURRENT_ROOT_DEADLINE_NANOS.set(deadlineNanos);
             armRootDeadline();
@@ -1658,6 +1661,7 @@ public final class ActorRuntime implements AutoCloseable {
                 Thread.interrupted();
                 carrier = null;
                 CURRENT_ROOT_DEADLINE_NANOS.remove();
+                currentRootTask.remove();
                 CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
                 phase.set(FINISHED);
@@ -1693,6 +1697,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (phase.get() != RUNNING) return;
             Thread running = carrier;
             if (running == null) return;
+            if (!deadlineExpired.compareAndSet(false, true)) return;
 
             sharedOverrunTurns.incrementAndGet();
             if (compensationClaimed.compareAndSet(false, true)
@@ -3072,19 +3077,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void reserveActorSlot(ActorKind kind) {
         Objects.requireNonNull(kind);
+
+        // Fail the runtime-local admission first. Dedicated runtimes own their
+        // dispatcher group, so checking the group first obscures the actual
+        // contract with a misleading process-limit error. For process-shared
+        // runtimes, the group check below still enforces the process ceiling.
+        if (actorCount.get() >= dispatcherConfig.maxActors()) {
+            throw new IllegalStateException(
+                    "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+        }
+        if (kind == ActorKind.UNTRUSTED
+                && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
+            throw new IllegalStateException(
+                    "untrusted actor limit exceeded: maximum "
+                            + dispatcherConfig.maxUntrustedActors());
+        }
+
         dispatcherGroup.reserveActor(kind);
         boolean localReserved = false;
         try {
-            if (actorCount.get() >= dispatcherConfig.maxActors()) {
-                throw new IllegalStateException(
-                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
-            }
-            if (kind == ActorKind.UNTRUSTED
-                    && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
-                throw new IllegalStateException(
-                        "untrusted actor limit exceeded: maximum "
-                                + dispatcherConfig.maxUntrustedActors());
-            }
             actorCount.incrementAndGet();
             actorCountFor(kind).incrementAndGet();
             localReserved = true;
@@ -3471,6 +3482,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (rootDeadline != null
                     && rootDeadline != Long.MAX_VALUE
                     && System.nanoTime() - rootDeadline >= 0) {
+                RootTask<?> rootTask = currentRootTask.get();
+                if (rootTask != null) rootTask.expireRootTask();
                 throw new CancellationException(
                         "root/main process exceeded max wall time "
                                 + policyCeiling.maxWallTime());
@@ -4552,7 +4565,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Do not tear shared state out from under guest code that failed to
             // quiesce. A later close() may retry after the offending turn exits.
             throw new IllegalStateException(
-                    "ActorRuntime close did not observe full guest termination: "
+                    "ActorRuntime close did not observe full actor termination: "
                             + stillRunning.size() + " actor(s), "
                             + activeRootTasks.get() + " root task(s) still running");
         }
@@ -4621,8 +4634,12 @@ public final class ActorRuntime implements AutoCloseable {
             int maximum = dispatcherConfig.maxParallelismFor(kind);
             if (current >= maximum) return;
             int queued = executor.getQueue().size();
-            int active = executor.getActiveCount();
-            if (queued == 0 && active < current) return;
+            // Do not spend the only watchdog headroom merely because one peer
+            // is queued behind one busy carrier. Grow elastically only after
+            // queued demand exceeds the currently provisioned carrier count;
+            // a genuinely stuck carrier is then detected by the watchdog,
+            // which can claim bounded compensation inside the same hard cap.
+            if (queued <= current) return;
             executor.setCorePoolSize(current + 1);
             executor.prestartCoreThread();
         }
