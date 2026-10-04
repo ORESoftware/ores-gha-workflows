@@ -304,7 +304,7 @@ max_actors = 16384
 
 [dynamic_defaults]
 max_actors = 64
-mailbox_capacity = 1024
+inbox_capacity = 1024
 outbox_capacity = 4096
 restart_strategy = "one_for_one"
 max_restarts = 3
@@ -315,7 +315,7 @@ name = "default"
 kind = "shared"
 min_actors = 0
 max_actors = 4096
-mailbox_capacity = 2048
+inbox_capacity = 2048
 outbox_capacity = 8192
 restart_strategy = "one_for_one"
 max_restarts = 10
@@ -327,7 +327,7 @@ kind = "shared"
 min_actors = 8
 max_actors = 128
 factory = "workers/worker.ores::worker"
-mailbox_capacity = 1024
+inbox_capacity = 1024
 outbox_capacity = 4096
 restart_strategy = "one_for_one"
 max_restarts = 5
@@ -340,7 +340,7 @@ min_actors = 0
 max_actors = 32
 max_instances = 1024
 factory = "workers/tenant_worker.ores::worker"
-mailbox_capacity = 512
+inbox_capacity = 512
 outbox_capacity = 2048
 restart_strategy = "one_for_one"
 max_restarts = 3
@@ -396,7 +396,7 @@ Dynamic overrides are **narrowing only**:
 
 ```text
 requested.max_actors <= template.max_actors
-requested.mailbox_capacity <= template.mailbox_capacity
+requested.inbox_capacity <= template.inbox_capacity
 requested.outbox_capacity <= template.outbox_capacity
 requested.min_actors <= requested.max_actors
 ```

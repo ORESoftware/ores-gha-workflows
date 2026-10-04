@@ -37,7 +37,7 @@ public final class ActorGroupConfig {
             ActorRuntime.ActorKind actorKind,
             int minActors,
             int maxActors,
-            int mailboxCapacity,
+            int inboxCapacity,
             int outboxCapacity,
             RestartStrategy restartStrategy,
             int maxRestarts,
@@ -60,8 +60,8 @@ public final class ActorGroupConfig {
             if (minActors > maxActors) {
                 throw new IllegalArgumentException("minActors cannot exceed maxActors");
             }
-            if (mailboxCapacity <= 0) {
-                throw new IllegalArgumentException("mailboxCapacity must be > 0");
+            if (inboxCapacity <= 0) {
+                throw new IllegalArgumentException("inboxCapacity must be > 0");
             }
             if (outboxCapacity <= 0) {
                 throw new IllegalArgumentException("outboxCapacity must be > 0");
@@ -94,10 +94,10 @@ public final class ActorGroupConfig {
                         "dynamic group maxActors " + request.maxActors()
                                 + " exceeds template ceiling " + maxActors);
             }
-            if (request.mailboxCapacity() > mailboxCapacity) {
+            if (request.inboxCapacity() > inboxCapacity) {
                 throw new IllegalArgumentException(
-                        "dynamic group mailboxCapacity " + request.mailboxCapacity()
-                                + " exceeds template ceiling " + mailboxCapacity);
+                        "dynamic group inboxCapacity " + request.inboxCapacity()
+                                + " exceeds template ceiling " + inboxCapacity);
             }
             if (request.outboxCapacity() > outboxCapacity) {
                 throw new IllegalArgumentException(
@@ -117,7 +117,7 @@ public final class ActorGroupConfig {
                     actorKind,
                     request.minActors(),
                     request.maxActors(),
-                    request.mailboxCapacity(),
+                    request.inboxCapacity(),
                     request.outboxCapacity(),
                     restartStrategy,
                     maxRestarts,
@@ -162,7 +162,7 @@ public final class ActorGroupConfig {
             String template,
             int minActors,
             int maxActors,
-            int mailboxCapacity,
+            int inboxCapacity,
             int outboxCapacity) {
 
         public DynamicGroupRequest {
@@ -174,8 +174,8 @@ public final class ActorGroupConfig {
             if (maxActors <= 0) {
                 throw new IllegalArgumentException("maxActors must be > 0");
             }
-            if (mailboxCapacity <= 0) {
-                throw new IllegalArgumentException("mailboxCapacity must be > 0");
+            if (inboxCapacity <= 0) {
+                throw new IllegalArgumentException("inboxCapacity must be > 0");
             }
             if (outboxCapacity <= 0) {
                 throw new IllegalArgumentException("outboxCapacity must be > 0");

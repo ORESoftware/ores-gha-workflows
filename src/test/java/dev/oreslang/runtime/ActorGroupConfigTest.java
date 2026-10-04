@@ -86,7 +86,7 @@ final class ActorGroupConfigTest {
 
         assertEquals(4, resolved.minActors());
         assertEquals(16, resolved.maxActors());
-        assertEquals(512, resolved.mailboxCapacity());
+        assertEquals(512, resolved.inboxCapacity());
         assertEquals(2048, resolved.outboxCapacity());
         assertEquals(ActorRuntime.ActorKind.SHARED, resolved.actorKind());
         assertEquals(ActorGroupConfig.RestartStrategy.ONE_FOR_ONE, resolved.restartStrategy());

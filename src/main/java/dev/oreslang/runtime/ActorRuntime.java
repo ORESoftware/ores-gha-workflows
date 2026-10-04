@@ -1997,8 +1997,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private MemoryReservation reserveMailbox(Object isolatedMessage) {
-            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+        private MemoryReservation reserveInbox(Object isolatedMessage) {
+            return reserve(estimateFrozenBytes(isolatedMessage), "private actor inbox");
         }
 
         private synchronized MemoryReservation reserve(long bytes, String purpose) {
@@ -3736,15 +3736,15 @@ public final class ActorRuntime implements AutoCloseable {
                         sender.untrustedLimits.maxMailboxReturnBytes());
             } catch (IllegalStateException tooLarge) {
                 throw new IllegalStateException(
-                        "untrusted actor outbound mailbox payload exceeds "
+                        "untrusted actor outbox payload exceeds "
                                 + sender.untrustedLimits.maxMailboxReturnBytes()
                                 + " bytes; stream large HTTP responses through context.httpResponse()",
                         tooLarge);
             }
         }
 
-        if (!cell.reserveMailboxSlot()) {
-            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+        if (!cell.reserveInboxSlot()) {
+            throw new IllegalStateException("actor inbox limit exceeded for " + ref.id());
         }
         boolean mailboxSlotTransferred = false;
         try {
@@ -3755,13 +3755,13 @@ public final class ActorRuntime implements AutoCloseable {
         long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
         if (cell.kind == ActorKind.SHARED) {
             requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
-            long actorRemaining = Math.max(0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+            long actorRemaining = Math.max(0L, cell.policy.maxHeapBytes() - cell.sharedInboxBytes.get());
             long allowed = Math.min(actorRemaining, runtimeRemaining);
             try {
                 estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
             } catch (IllegalStateException tooLarge) {
                 throw new IllegalStateException(
-                        "shared actor mailbox memory limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
+                        "shared actor inbox memory limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
             }
         } else {
@@ -3790,7 +3790,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell.kind.memoryIsolated()) {
             MemoryReservation reservation;
             try {
-                reservation = cell.memorySlice.reserveMailbox(prepared);
+                reservation = cell.memorySlice.reserveInbox(prepared);
             } catch (IllegalStateException exceeded) {
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
@@ -3798,9 +3798,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             release = reservation::close;
         } else {
-            long bytes = estimateSharedMailboxBytes(prepared, new IdentityHashMap<>(), 0);
-            cell.reserveSharedMailbox(bytes);
-            release = () -> cell.releaseSharedMailbox(bytes);
+            long bytes = estimateSharedInboxBytes(prepared, new IdentityHashMap<>(), 0);
+            cell.reserveSharedInbox(bytes);
+            release = () -> cell.releaseSharedInbox(bytes);
         }
 
         MessageEnvelope envelope = new MessageEnvelope(prepared, release);
@@ -3816,8 +3816,8 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
                     }
-                    if (!cell.mailbox.offer(envelope)) {
-                        throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                    if (!cell.inbox.offer(envelope)) {
+                        throw new IllegalStateException("actor inbox limit exceeded for " + ref.id());
                     }
                     mailboxSlotTransferred = true;
                     admitted = true;
@@ -3832,7 +3832,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         cell.schedule();
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot();
+            if (!mailboxSlotTransferred) cell.releaseInboxSlot();
         }
     }
 
@@ -4688,7 +4688,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private static long estimateSharedMailboxBytes(
+    private static long estimateSharedInboxBytes(
             Object value,
             IdentityHashMap<Object, Boolean> seen,
             int depth) {
@@ -4713,22 +4713,22 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
-                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateSharedInboxBytes(item, seen, depth + 1));
             }
             return bytes;
         }
         if (value instanceof Set<?> set) {
             bytes = Math.addExact(bytes, 16L * set.size());
             for (Object item : set) {
-                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateSharedInboxBytes(item, seen, depth + 1));
             }
             return bytes;
         }
         if (value instanceof Map<?, ?> map) {
             bytes = Math.addExact(bytes, 32L * map.size());
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getKey(), seen, depth + 1));
-                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getValue(), seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateSharedInboxBytes(entry.getKey(), seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateSharedInboxBytes(entry.getValue(), seen, depth + 1));
             }
             return bytes;
         }
@@ -5214,7 +5214,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ConcurrentLinkedQueue<ContinuationEnvelope> nextTickContinuations =
                 new ConcurrentLinkedQueue<>();
         private final Set<ActorTimerWheel.Handle> timers = ConcurrentHashMap.newKeySet();
-        private final AtomicLong sharedMailboxBytes = new AtomicLong();
+        private final AtomicLong sharedInboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -5226,7 +5226,7 @@ public final class ActorRuntime implements AutoCloseable {
          * first carrier handoff would under-account a continuation that still
          * captures the delivered message graph.
          */
-        private MessageEnvelope suspendedMailboxEnvelope;
+        private MessageEnvelope suspendedInboxEnvelope;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -5250,7 +5250,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ? policy.maxMailboxMessages()
                     : Math.min(
                             policy.maxMailboxMessages(),
-                            resolveActorGroup(groupHandle).policy().mailboxCapacity());
+                            resolveActorGroup(groupHandle).policy().inboxCapacity());
             this.inbox = new LinkedBlockingQueue<>(inboxCapacity);
             this.memorySlice = kind.memoryIsolated()
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -5317,7 +5317,7 @@ public final class ActorRuntime implements AutoCloseable {
                 ref.terminationCause.compareAndSet(null, failure);
                 ref.failReady(failure);
                 stopped.set(true);
-                drainMailboxReservations();
+                drainInboxReservations();
                 carrier = activeCarrier;
                 finalizeStopLocked();
             }
@@ -5390,7 +5390,7 @@ public final class ActorRuntime implements AutoCloseable {
                 ref.terminationCause.compareAndSet(null, failure);
                 ref.failReady(failure);
                 stopped.set(true);
-                drainMailboxReservations();
+                drainInboxReservations();
                 overrunCounter(kind).incrementAndGet();
                 if (compensationClaimed.compareAndSet(false, true)
                         && !claimCompensatingThread(kind)) {
@@ -5423,7 +5423,7 @@ public final class ActorRuntime implements AutoCloseable {
             return Duration.ofNanos(remaining);
         }
 
-        private boolean reserveMailboxSlot() {
+        private boolean reserveInboxSlot() {
             while (true) {
                 int current = queuedMessages.get();
                 if (current >= inboxCapacity) return false;
@@ -5431,7 +5431,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void releaseMailboxSlot() {
+        private void releaseInboxSlot() {
             int remaining = queuedMessages.decrementAndGet();
             if (remaining < 0) {
                 queuedMessages.incrementAndGet();
@@ -5482,10 +5482,10 @@ public final class ActorRuntime implements AutoCloseable {
             messageDeadlineFuture = null;
             activeMessageEpoch = 0L;
             if (messageTimer != null) messageTimer.cancel(false);
-            drainMailboxReservations();
-            closeSuspendedMailboxEnvelope();
+            drainInboxReservations();
+            closeSuspendedInboxEnvelope();
             drainControlEvents();
-            for (ActorTimerWheel.Handle timer : List.copyOf(timers)) timer.cancel();
+            for (ActorTimerWheel.Handle actorTimer : List.copyOf(timers)) actorTimer.cancel();
             timers.clear();
             behavior = null;
             if (httpRequest != null) {
@@ -5532,33 +5532,33 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void reserveSharedMailbox(long bytes) {
+        private void reserveSharedInbox(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 if (stopped.get()) throw terminated(ref);
-                long current = sharedMailboxBytes.get();
+                long current = sharedInboxBytes.get();
                 long next;
                 try {
                     next = Math.addExact(current, bytes);
                 } catch (ArithmeticException overflow) {
-                    throw new IllegalStateException("shared actor mailbox memory accounting overflow");
+                    throw new IllegalStateException("shared actor inbox memory accounting overflow");
                 }
                 if (next > policy.maxHeapBytes()) {
-                    throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
+                    throw new IllegalStateException("shared actor inbox memory limit exceeded for " + ref.id()
                             + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
                 }
-                reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
-                sharedMailboxBytes.set(next);
+                reserveSharedRuntimeBytes(bytes, "shared actor inbox");
+                sharedInboxBytes.set(next);
             }
         }
 
-        private void releaseSharedMailbox(long bytes) {
+        private void releaseSharedInbox(long bytes) {
             if (bytes == 0) return;
             synchronized (lifecycleLock) {
-                long current = sharedMailboxBytes.get();
+                long current = sharedInboxBytes.get();
                 long next = Math.max(0L, current - bytes);
-                sharedMailboxBytes.set(next);
+                sharedInboxBytes.set(next);
                 releaseSharedRuntimeBytes(bytes);
             }
         }
@@ -5704,7 +5704,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (logicalTurnSuspended) return !readyContinuations.isEmpty();
             return !readyContinuations.isEmpty()
                     || !nextTickContinuations.isEmpty()
-                    || !mailbox.isEmpty();
+                    || !inbox.isEmpty();
         }
 
         private void schedule() {
@@ -5868,7 +5868,7 @@ public final class ActorRuntime implements AutoCloseable {
                         suspendedAgain = true;
                     } finally {
                         disarmMessageDeadline(continuationDeadline);
-                        if (!suspendedAgain) closeSuspendedMailboxEnvelope();
+                        if (!suspendedAgain) closeSuspendedInboxEnvelope();
                     }
                     // await always ends a scheduling turn, even when the future
                     // was already complete. Do not consume another mailbox
@@ -5919,13 +5919,13 @@ public final class ActorRuntime implements AutoCloseable {
                 int turnThroughput = dispatcherConfig.throughputFor(kind);
                 long batchStartedNanos = System.nanoTime();
                 while (processed < turnThroughput && !stopped.get()) {
-                    MessageEnvelope envelope = mailbox.poll();
+                    MessageEnvelope envelope = inbox.poll();
                     if (envelope == null) break;
-                    releaseMailboxSlot();
+                    releaseInboxSlot();
                     boolean messageSuspended = false;
                     try {
                         beginMessageBudget();
-                        long messageDeadline = armMessageDeadline("mailbox message");
+                        long messageDeadline = armMessageDeadline("inbox message");
                         try {
                             try {
                                 behavior.onMessage((M) envelope.value(), context);
@@ -5935,7 +5935,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 // Keep the envelope rooted/accounted until that
                                 // logical turn finally completes.
                                 messageSuspended = true;
-                                suspendedMailboxEnvelope = envelope;
+                                suspendedInboxEnvelope = envelope;
                                 return;
                             }
                             if (kind.memoryIsolated() && !trustedFactory) {
@@ -5982,17 +5982,17 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void drainMailboxReservations() {
+        private void drainInboxReservations() {
             MessageEnvelope envelope;
-            while ((envelope = mailbox.poll()) != null) {
-                releaseMailboxSlot();
+            while ((envelope = inbox.poll()) != null) {
+                releaseInboxSlot();
                 envelope.close();
             }
         }
 
-        private void closeSuspendedMailboxEnvelope() {
-            MessageEnvelope envelope = suspendedMailboxEnvelope;
-            suspendedMailboxEnvelope = null;
+        private void closeSuspendedInboxEnvelope() {
+            MessageEnvelope envelope = suspendedInboxEnvelope;
+            suspendedInboxEnvelope = null;
             if (envelope != null) envelope.close();
         }
 
@@ -6007,7 +6007,7 @@ public final class ActorRuntime implements AutoCloseable {
                 ref.terminationCause.compareAndSet(null, failure);
                 ref.failReady(failure);
                 stopped.set(true);
-                drainMailboxReservations();
+                drainInboxReservations();
                 finalizeStopLocked();
             }
         }
@@ -6019,7 +6019,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor stopped before reaching READY"));
                 }
                 stopped.set(true);
-                drainMailboxReservations();
+                drainInboxReservations();
                 finalizeStopLocked();
             }
         }
@@ -6028,7 +6028,7 @@ public final class ActorRuntime implements AutoCloseable {
             Thread carrier;
             synchronized (lifecycleLock) {
                 stopped.set(true);
-                drainMailboxReservations();
+                drainInboxReservations();
                 carrier = activeCarrier;
                 finalizeStopLocked();
             }
