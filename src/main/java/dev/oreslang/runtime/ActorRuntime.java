@@ -4474,7 +4474,18 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        closeFromSupervisor();
+    }
 
+    /**
+     * Host lifecycle teardown path used by OresContext/Truffle disposal.
+     *
+     * Package-private on purpose: guest code may reach only the public
+     * AutoCloseable surface, which still enforces supervisor-only shutdown.
+     * Truffle disposal can occur while a root task is unwinding, so it must
+     * not be misclassified as a guest-initiated runtime close.
+     */
+    void closeFromSupervisor() {
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
