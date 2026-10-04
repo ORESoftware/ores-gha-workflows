@@ -6,7 +6,7 @@ This document reconciles the actor callable/spawn work with the serialized share
 
 ## 1. Core distinction
 
-Oreslang has persistent actors. An `actor fnc` / `actor routine` is the **factory/launch entrypoint** for one persistent actor; it is not an ordinary function and it is not itself a one-shot mailbox turn.
+Oreslang has persistent actors. An `actor fnc` / `actor routine` is the **factory/launch entrypoint** for one persistent actor; it is not an ordinary function and it is not itself a one-shot inbox turn.
 
 A spawn target MUST be declared with an actor execution-domain modifier:
 
@@ -22,7 +22,7 @@ ActorBehavior<In, Out>
 
 A concrete actor class may satisfy this protocol structurally.
 
-The behavior has exactly one public mailbox ingress:
+The behavior has exactly one public inbox ingress:
 
 ```ores
 receive_message(In message): void
@@ -60,12 +60,21 @@ pub actor fnc counter(int initial): ActorBehavior<Increment, CounterChanged> {
 }
 
 pub routine main(): void {
-  val pending = spawn counter(10);
+  val counters = actor_groups.define<CounterChanged>({
+    min_actors: 0,
+    max_actors: 64,
+    inbox_capacity: 1024,
+    outbox_capacity: 4096
+  });
+
+  val pending = spawn counter(10) with {
+    group: counters
+  };
 
   // identity is synchronous after reservation/admission
   stdio.println(pending.id);
 
-  // READY means the behavior exists and its mailbox endpoint is usable
+  // READY means the behavior exists and its inbox endpoint is usable
   val counter_ref = await pending.ready;
 
   counter_ref.send(Increment(5));
@@ -82,14 +91,16 @@ RESERVED -> STARTING -> READY -> RUNNING -> TERMINATED
                   \-> FAILED_TO_START
 ```
 
-`spawn actor_factory(args...)` performs only bounded synchronous launch work:
+`spawn actor_factory(args...) with { group: group_capability }` performs only bounded synchronous launch work. The `group` entry is required and non-null:
 
 1. validate the spawn target is an actor factory;
-2. validate/copy/freeze/transfer launch arguments for the target actor domain;
-3. reserve ActorId and actor/group quotas;
-4. create local control futures;
-5. enqueue actor initialization;
-6. return the launch ticket.
+2. resolve and authenticate the supplied ActorGroup capability;
+3. require the group's execution domain to match the actor factory domain;
+4. validate/copy/freeze/transfer launch arguments for the target actor domain;
+5. reserve group/process/domain quotas and ActorId transactionally;
+6. create local control futures;
+7. enqueue actor initialization;
+8. return the launch ticket.
 
 The actor factory executes later on the target actor dispatcher. READY is published only after:
 
@@ -153,7 +164,7 @@ The existing `nlex` model should be reused for actor factories/actor-owned lexic
 
 ## 6. Event loop and scheduling
 
-No scheduler or mailman dynamically selects across every actor mailbox.
+No scheduler or mailman dynamically selects across every actor inbox.
 
 Incoming path:
 
@@ -166,13 +177,13 @@ send(message)
 
 A carrier obtains an actor execution lease and runs a bounded quantum. At most one carrier executes guest code for one actor at a time.
 
-`await`, timers, and I/O completion use the existing continuation path. Completion threads enqueue wakeups only; they never execute actor code. A suspended logical mailbox turn remains serialized until its continuation completes.
+`await`, timers, and I/O completion use the existing continuation path. Completion threads enqueue wakeups only; they never execute actor code. A suspended logical inbox turn remains serialized until its continuation completes.
 
 Generator `yield` is unrelated and must never become an actor scheduling primitive.
 
 ## 7. ActorGroup and mailman
 
-Every persistent actor belongs to exactly one `ActorGroup<Out>`. A default shared group exists for spawns that do not name a group.
+Every persistent actor belongs to exactly one `ActorGroup<Out>`. Source-level `spawn` MUST supply a non-null group capability explicitly; there is no implicit fallback group at spawn time.
 
 Conceptually:
 
@@ -180,8 +191,9 @@ Conceptually:
 ActorGroup<Out>
   actor registry
   runnable scheduling state
-  bounded MPSC outbox<ActorMail<Out>>
-  one logical mailman
+  one bounded inbox per actor
+  one bounded MPSC outbox<ActorMail<Out>>
+  exactly one logical ActorMailman<Out>
   supervisor/lifecycle policy
   quotas
 ```
@@ -194,7 +206,7 @@ Actor B ----> group.outbox ---> logical mailman
 Actor C --/
 ```
 
-The mailman is one logical serialized consumer, not one permanently dedicated OS thread. It may migrate across carriers exactly like an actor.
+The mailman is one logical serialized consumer, not one permanently dedicated OS thread. It runs on the Oreslang VM CONTROL scheduler (shared with supervisors/root control work, never an actor-domain pool) and may migrate across control-plane carriers between quanta.
 
 A future implementation may partition mailman work by an explicit routing key, but parallel routing must be opt-in because it weakens total ordering.
 
@@ -216,7 +228,7 @@ Trace/span id, request id, deadline, sequence, or other runtime metadata may be 
 The mailman/supervisor routes with ordinary Oreslang pattern matching:
 
 ```ores
-switch mail.message {
+match mail.message {
   CounterChanged(value) -> {
     // route/persist/reply/etc.
   }
@@ -662,3 +674,93 @@ The catalog still serves useful purposes even though actors do not self-register
 - the backend can emit a compact dispatch table for only retained actor factories.
 
 So the registry concept is useful as **generated link metadata**, but harmful as a runtime side-effect mechanism.
+
+
+## 18. Actor-side group capabilities and confined memory
+
+Group ownership and group membership are intentionally different concepts.
+
+The runtime/supervisor owns the actual `ActorGroup`. Root/supervisor code may hold:
+
+```text
+ActorGroupRef<Out>
+```
+
+Actor code never receives that control-plane object. A trusted SHARED or PRIVATE actor may instead receive:
+
+```text
+ActorGroupHandle<Out>
+```
+
+The handle is an opaque capability containing identity/domain/generation authentication only. It contains no Java/Ores pointer to the runtime, supervisor, mailman, actor registry, inbox, outbox, or other mutable group state.
+
+This is especially important for `isoactor`: its `self.group` capability may cross into confined memory because it is opaque, but it cannot dereference the top-level ActorGroup graph.
+
+UNTRUSTED actors are members of a runtime-owned group for supervision/output routing, but `self.group` does not expose a spawn-capable handle to them because untrusted actors cannot spawn children.
+
+A child or grandchild spawn therefore uses a capability, never ownership transfer:
+
+```ores
+val child = spawn child_worker(config) with {
+  group: self.group
+};
+```
+
+The group continues to be supervisor-owned if the actor that requested the child later terminates.
+
+## 19. One actor inbox, one group outbox
+
+The runtime enforces the channel topology:
+
+```text
+external/group send
+        |
+        v
+ actor.inbox                 exactly one per actor
+        |
+        v
+ serialized actor turn      one execution lease
+        |
+      emit Out
+        |
+        v
+ group.outbox                exactly one bounded outbox per group
+        |
+        v
+ ActorMailman.receive_mail   one logical serialized mailman
+        |
+        +----> side effect/capability
+        |
+        +----> send(...) -> target actor.inbox
+```
+
+Actor state may be mutated only from its serialized turn. Actors do not receive direct mutable references to another actor, its inbox, group outbox, or mailman state.
+
+The mailman may be a stateful class:
+
+```ores
+class WorkerMailman : ActorMailman<WorkerEvent> {
+  let uint completed = 0;
+
+  pub receive_mail(
+      ActorMail<WorkerEvent> mail,
+      ActorGroupContext<WorkerEvent> group
+  ): void {
+    match mail.message {
+      WorkCompleted(job_id) -> {
+        self.completed += 1;
+      }
+
+      WorkerIdle() -> {
+        // Route through a typed ActorRef; this re-enters that actor's inbox.
+      }
+
+      _ -> { }
+    }
+  }
+}
+```
+
+The application does not write the endless loop. The runtime owns the resumable loop and invokes `receive_mail` for a bounded quantum while holding the mailman's single execution lease. When the outbox is empty, no carrier thread remains blocked on the group.
+
+`match` is the structural/pattern-matching construct. `switch` is reserved for classic case-style dispatch.

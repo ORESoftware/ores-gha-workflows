@@ -27,6 +27,7 @@ final class ActorGroupRuntime<Out> {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicLong nextSequence = new AtomicLong();
+    private final Object outboxAdmissionLock = new Object();
     private final AtomicBoolean scheduled = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
     private final AtomicReference<Thread> executionLease = new AtomicReference<>();
@@ -138,16 +139,18 @@ final class ActorGroupRuntime<Out> {
                     "actor " + sender.id() + " is not a member of actor group " + id);
         }
 
-        long sequence = nextSequence.getAndIncrement();
-        ActorMail<Out> mail = new ActorMail<>(
-                sender.id(),
-                id,
-                sequence,
-                (Out) output);
-        if (!outbox.offer(mail)) {
-            throw new IllegalStateException(
-                    "actor group outbox capacity exceeded for " + id
-                            + ": max=" + policy.outboxCapacity());
+        synchronized (outboxAdmissionLock) {
+            long sequence = nextSequence.getAndIncrement();
+            ActorMail<Out> mail = new ActorMail<>(
+                    sender.id(),
+                    id,
+                    sequence,
+                    (Out) output);
+            if (!outbox.offer(mail)) {
+                throw new IllegalStateException(
+                        "actor group outbox capacity exceeded for " + id
+                                + ": max=" + policy.outboxCapacity());
+            }
         }
         scheduleMailman();
     }
@@ -156,7 +159,7 @@ final class ActorGroupRuntime<Out> {
         if (stopped.get()) return;
         if (!scheduled.compareAndSet(false, true)) return;
         try {
-            runtime.executeActorGroupMailman(kind, this::runMailmanQuantum);
+            runtime.executeActorGroupMailman(this::runMailmanQuantum);
         } catch (RuntimeException failure) {
             scheduled.set(false);
             throw failure;
