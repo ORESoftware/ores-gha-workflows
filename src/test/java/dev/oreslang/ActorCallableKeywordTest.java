@@ -90,8 +90,8 @@ final class ActorCallableKeywordTest {
                   stdio.stdout.write(await doubled.result);
                   stdio.stdout.write(":");
 
-                  val private = spawn private_emit("private");
-                  await private.done;
+                  val private_spawn = spawn private_emit("private");
+                  await private_spawn.done;
                   return;
                 }
                 """);
