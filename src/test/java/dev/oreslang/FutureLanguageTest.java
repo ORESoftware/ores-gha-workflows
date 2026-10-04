@@ -52,6 +52,33 @@ final class FutureLanguageTest {
     }
 
     @Test
+    void futureOfMutexGuardMayBeAggregatedButAcquiredGuardMayNot() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc aggregate_pending(Mutex<int> first_mutex, Mutex<int> second_mutex) => void {
+                    val first = first_mutex.lock_async();
+                    val second = second_mutex.lock_async();
+                    val pending = [first, second];
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc aggregate_acquired(Mutex<int> mutex) => void {
+                            val guard = mutex.lock();
+                            val invalid = [guard];
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("MutexGuard cannot be stored in an array/list"));
+    }
+
+    @Test
     void futuresAllRunsThroughLanguageRuntimeWithoutBlockingRootCarrier() throws Exception {
         String program = """
                 pub routine main() => void {
