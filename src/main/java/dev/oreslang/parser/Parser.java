@@ -241,6 +241,7 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean sharedIngressSeen = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -264,7 +265,25 @@ public final class Parser {
             } else {
                 match(FNC);
             }
-            methods.add(parseMethod(annotations, mods));
+            Ast.MethodDecl method = parseMethod(annotations, mods);
+            if (actorKind == Ast.ActorKind.SHARED
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                if (method.isStatic()) {
+                    throw error(previous(),
+                            "shared actor public surface is mailbox-only; static helpers must be private");
+                }
+                if (!method.name().equals("receive_message")) {
+                    throw error(previous(),
+                            "shared actors expose exactly one mailbox ingress named 'receive_message'; "
+                                    + "all other methods must be private");
+                }
+                if (sharedIngressSeen) {
+                    throw error(previous(),
+                            "shared actor may declare only one public 'receive_message' ingress");
+                }
+                sharedIngressSeen = true;
+            }
+            methods.add(method);
         }
 
         consume(terminator, braceStyle
