@@ -216,6 +216,8 @@ public final class ActorRuntime implements AutoCloseable {
             int maxActors) {
         public static final long DEFAULT_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
         public static final long DEFAULT_MAX_MESSAGE_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+        public static final int DEFAULT_MIN_POOL_THREADS = 5;
+        public static final int DEFAULT_MAX_POOL_THREADS = 20;
 
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
@@ -294,31 +296,33 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Production defaults partition the hot CPU budget instead of giving
-         * every pool availableProcessors() workers. The untrusted domain gets
-         * the smallest slice; shared/root keeps at least two workers so a
-         * synchronous root awaiting a shared actor cannot consume its only
-         * carrier.
+         * Production defaults use three independent Erlang-style carrier
+         * bulkheads. Each domain starts with a small worker floor and may grow
+         * toward a bounded ceiling when runnable actor demand accumulates.
+         *
+         * The pools are intentionally not partitioned as permanent CPU owners:
+         * idle carriers are cheap and actors never own a carrier. The scheduler
+         * preserves the stronger invariant that one actor has at most one
+         * execution lease even when later turns migrate to another thread.
          */
         public static DispatcherConfig defaults() {
             return defaultsForProcessors(Runtime.getRuntime().availableProcessors());
         }
 
         public static DispatcherConfig defaultsForProcessors(int availableProcessors) {
-            int cpus = Math.max(1, availableProcessors);
-            int untrusted = Math.max(1, cpus / 8);
-            int remaining = Math.max(1, cpus - untrusted);
-            int shared = Math.max(2, (remaining + 1) / 2);
-            int isolated = Math.max(1, cpus - untrusted - shared);
-            int compensation = Math.max(1, Math.min(4, cpus / 4));
+            if (availableProcessors <= 0) {
+                throw new IllegalArgumentException("availableProcessors must be > 0");
+            }
+            int floor = DEFAULT_MIN_POOL_THREADS;
+            int elasticHeadroom = DEFAULT_MAX_POOL_THREADS - DEFAULT_MIN_POOL_THREADS;
             return new DispatcherConfig(
-                    isolated,
-                    shared,
-                    untrusted,
+                    floor,
+                    floor,
+                    floor,
                     64,
                     DEFAULT_MAX_BATCH_NANOS,
                     DEFAULT_MAX_MESSAGE_NANOS,
-                    compensation,
+                    elasticHeadroom,
                     16_384);
         }
 
@@ -351,6 +355,15 @@ public final class ActorRuntime implements AutoCloseable {
                 case SHARED -> sharedParallelism;
                 case UNTRUSTED -> untrustedParallelism;
             };
+        }
+
+        public int maxParallelismFor(ActorKind kind) {
+            int base = parallelismFor(kind);
+            try {
+                return Math.addExact(base, maxCompensatingThreads);
+            } catch (ArithmeticException overflow) {
+                return Integer.MAX_VALUE;
+            }
         }
     }
 
@@ -2237,7 +2250,10 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
-            this.readiness = new OresFuture<>(() -> requestStop(id));
+            this.readiness = new OresFuture<>(() -> {
+                ActorCell<?> cell = actors.get(id);
+                if (cell != null) cell.stop();
+            });
         }
 
         public ActorId id() { return id; }
@@ -2882,7 +2898,13 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
-            if (ref != null) requestStop(ref.id());
+            if (ref != null && ref.isAlive()) {
+                try {
+                    ref.stop();
+                } catch (IllegalStateException ignored) {
+                    // A concurrent actor exit won the race.
+                }
+            }
         });
 
         ActorRef<M> ref = spawnInternal(
@@ -3259,19 +3281,6 @@ public final class ActorRuntime implements AutoCloseable {
         // deterministic teardown. Keep it alive until finalization has closed
         // private memory, drained reservations, and unregistered the cell.
         return cell != null && !cell.finalized();
-    }
-
-    /**
-     * Nonblocking cancellation primitive used by runtime-owned Futures.
-     *
-     * This only requests actor termination; it never waits for finalization and
-     * therefore is safe to invoke from an actor carrier or async completion
-     * callback. The public stop(ActorRef) host API remains the synchronization
-     * point that may wait for deterministic teardown.
-     */
-    private void requestStop(ActorId id) {
-        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
-        if (cell != null) cell.stop();
     }
 
     public void stop(ActorRef<?> ref) {
@@ -4586,6 +4595,43 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    /**
+     * Grow a carrier pool when runnable actor turns are accumulating.
+     *
+     * ThreadPoolExecutor normally queues once its core size is reached, which
+     * would make a 5..20 pool behave like a fixed five-thread pool. Raising the
+     * core target one step at a time lets demand activate additional carriers
+     * while keeping the hard maximum bounded.
+     */
+    private void scaleDispatcherForDemand(ActorKind kind) {
+        ThreadPoolExecutor executor = dispatcherFor(kind);
+        synchronized (executor) {
+            int current = executor.getCorePoolSize();
+            int maximum = dispatcherConfig.maxParallelismFor(kind);
+            if (current >= maximum) return;
+            int queued = executor.getQueue().size();
+            int active = executor.getActiveCount();
+            if (queued == 0 && active < current) return;
+            executor.setCorePoolSize(current + 1);
+            executor.prestartCoreThread();
+        }
+    }
+
+    /**
+     * Return an elastic pool toward its configured floor after demand drains.
+     * Watchdog compensation claims form part of the temporary floor so a stuck
+     * carrier cannot be retired out from under its replacement.
+     */
+    private void relaxDispatcherAfterQuantum(ActorKind kind) {
+        ThreadPoolExecutor executor = dispatcherFor(kind);
+        synchronized (executor) {
+            if (!executor.getQueue().isEmpty()) return;
+            int floor = dispatcherConfig.parallelismFor(kind) + compensationCounter(kind).get();
+            int current = executor.getCorePoolSize();
+            if (current > floor) executor.setCorePoolSize(current - 1);
+        }
+    }
+
     private boolean claimCompensatingThread(ActorKind kind) {
         int limit = dispatcherConfig.maxCompensatingThreads();
         if (limit == 0) return false;
@@ -4598,9 +4644,12 @@ public final class ActorRuntime implements AutoCloseable {
             ThreadPoolExecutor executor = dispatcherFor(kind);
             synchronized (executor) {
                 int base = dispatcherConfig.parallelismFor(kind);
-                int target = Math.min(
-                        executor.getMaximumPoolSize(),
-                        Math.max(base, executor.getCorePoolSize()) + 1);
+                int currentCore = Math.max(base, executor.getCorePoolSize());
+                if (currentCore >= executor.getMaximumPoolSize()) {
+                    counter.decrementAndGet();
+                    return false;
+                }
+                int target = Math.min(executor.getMaximumPoolSize(), currentCore + 1);
                 executor.setCorePoolSize(target);
                 executor.prestartCoreThread();
             }
@@ -4679,6 +4728,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Duration hardLifetime;
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
+        private final AtomicReference<Thread> executionLease = new AtomicReference<>();
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -4901,18 +4951,25 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) return false;
-                activeTurns++;
+                if (activeTurns != 0) {
+                    throw new IllegalStateException(
+                            "single-executor actor invariant violated for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
+                }
+                activeTurns = 1;
                 return true;
             }
         }
 
         private void endTurn() {
             synchronized (lifecycleLock) {
-                if (activeTurns <= 0) {
-                    throw new IllegalStateException("actor active-turn accounting underflow for " + ref.id());
+                if (activeTurns != 1) {
+                    throw new IllegalStateException(
+                            "actor active-turn accounting invariant violated for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
                 }
-                activeTurns--;
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                activeTurns = 0;
+                if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
         }
@@ -5015,6 +5072,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 dispatcherFor(kind).execute(this::runBatch);
+                scaleDispatcherForDemand(kind);
             } catch (RejectedExecutionException rejected) {
                 rejectionCounter(kind).incrementAndGet();
                 scheduled.set(false);
@@ -5025,6 +5083,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            Thread carrier = Thread.currentThread();
+            if (!executionLease.compareAndSet(null, carrier)) {
+                ACTOR_CARRIER.remove();
+                fail(new IllegalStateException(
+                        "single-executor actor lease violation for " + ref.id()));
+                return;
+            }
             boolean turnActive = beginTurn();
             long entryDeadline = 0L;
             try {
@@ -5034,7 +5099,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // guest callback. In adversarial contexts TurnExecutor may wait
                 // for a context-entry lock; that wait must still be bounded or
                 // one hostile turn can strand every untrusted carrier behind it.
-                activeCarrier = Thread.currentThread();
+                activeCarrier = carrier;
                 entryDeadline = armMessageDeadline("runtime context entry");
                 final long armedEntryDeadline = entryDeadline;
                 turnExecutor.execute(() -> {
@@ -5051,9 +5116,15 @@ public final class ActorRuntime implements AutoCloseable {
                 disarmMessageDeadline(entryDeadline);
                 activeCarrier = null;
                 if (turnActive) endTurn();
+                if (!executionLease.compareAndSet(carrier, null)) {
+                    fail(new IllegalStateException(
+                            "actor execution lease ownership changed unexpectedly for " + ref.id()));
+                }
                 scheduled.set(false);
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
                     schedule();
+                } else {
+                    relaxDispatcherAfterQuantum(kind);
                 }
                 ACTOR_CARRIER.remove();
             }
