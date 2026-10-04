@@ -121,12 +121,14 @@ final class SecureJitHotReloadDomainTest {
             // Reclamation is VM CONTROL-plane maintenance, not work performed
             // inline by the lease-releasing actor/request thread.
             long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
-            while (!first.closed() && System.nanoTime() < deadline) {
+            while ((!first.closed() || hot.liveGenerations() != 1)
+                    && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
             assertTrue(first.closed(),
-                    "final lease release must eventually reclaim the draining generation");
-            assertEquals(1, hot.liveGenerations());
+                    "final lease release must eventually close the draining generation");
+            assertEquals(1, hot.liveGenerations(),
+                    "closed generation must also be removed from VM ownership");
             assertEquals(HotReloadManager.GenerationState.ACTIVE, second.state());
         }
     }
