@@ -1396,7 +1396,13 @@ public final class TypeChecker {
         if (named.name().equals("ActorRef") && named.arguments().isEmpty()) {
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
-                case "is_alive" -> new Function(List.of(), Primitive.BOOL);
+                case "is_alive" -> {
+                    if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                        throw new IllegalArgumentException(
+                                "untrusted actors cannot inspect ActorRef lifecycle state");
+                    }
+                    yield new Function(List.of(), Primitive.BOOL);
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown ActorRef member '" + member
                                 + "'; one-shot actor callables expose identity/control, not an application mailbox");
