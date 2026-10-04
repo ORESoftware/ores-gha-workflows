@@ -81,12 +81,12 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
     @Test
-    void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
+    void sharedActorUsesSingleMailboxIngressAndAllowsOwnedStateMutation() {
         String source = """
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc withdraw(int amount) => void {
+                  pub fnc receive_message(int amount) => void {
                     self.balance = self.balance - amount;
                     return;
                   }
@@ -98,10 +98,41 @@ final class ParserTest {
 
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertEquals("Account", actor.name());
-        assertEquals("withdraw", actor.methods().getFirst().name());
+        assertEquals("receive_message", actor.methods().getFirst().name());
 
         Ast.Program typed = TypeChecker.check(program);
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
+    void sharedActorRejectsMultipleOrNonMailboxPublicMethods() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Bad {
+                  pub fnc read() => int { return 1; }
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Bad {
+                  pub fnc receive_message(int value) => void { return; }
+                  pub fnc receive_message(String value) => void { return; }
+                }
+                """));
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                shared actor Good {
+                  let count = 0;
+
+                  private helper() => int {
+                    return self.count;
+                  }
+
+                  pub receive_message(int value) => void {
+                    self.count = self.count + value;
+                    return;
+                  }
+                }
+                """));
     }
 
     @Test
@@ -168,7 +199,7 @@ final class ParserTest {
                 shared actor Account {
                   let int balance = 100;
 
-                  pub fnc read() => int {
+                  pub fnc receive_message() => int {
                     return self.balance;
                   }
                 }
@@ -211,7 +242,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => Account {
+                      pub fnc receive_message() => Account {
                         return self;
                       }
                     }
@@ -224,7 +255,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub fnc receive_message() => &mut Account {
                         return &mut self;
                       }
                     }
@@ -237,7 +268,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub fnc receive_message() => &mut Account {
                         val alias = &mut self;
                         return alias;
                       }
@@ -251,7 +282,7 @@ final class ParserTest {
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub fnc leak() => Array<int> {
+                      pub fnc receive_message() => Array<int> {
                         return self.items;
                       }
                     }
@@ -267,7 +298,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc current() => int {
+                      pub fnc receive_message() => int {
                         return self.balance;
                       }
                     }
@@ -284,7 +315,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc inspectSelf() => int {
+                      pub fnc receive_message() => int {
                         return inspect(&self);
                       }
                     }
@@ -302,7 +333,7 @@ final class ParserTest {
                 }
 
                 shared actor Child extends Parent {
-                  pub fnc current() => int {
+                  pub fnc receive_message() => int {
                     return self.value;
                   }
                 }
