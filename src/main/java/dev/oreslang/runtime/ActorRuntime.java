@@ -2959,6 +2959,14 @@ public final class ActorRuntime implements AutoCloseable {
         ref.termination().whenComplete((normalTermination, terminationFailure) -> {
             if (completion.isDone()) return;
 
+            // A scheduler/control-plane failure is authoritative even if
+            // uncooperative guest code ignores interruption and returns later.
+            // Never turn a watchdog timeout into a successful spawn result.
+            if (terminationFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
+                return;
+            }
+
             // Publish a callable result only after the one-shot actor turn has
             // fully left guest execution and finalized. This makes awaiting
             // spawn.result a safe lifecycle boundary for embedders: once it
@@ -2974,12 +2982,8 @@ public final class ActorRuntime implements AutoCloseable {
                 return;
             }
 
-            if (terminationFailure != null) {
-                completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
-            } else {
-                completion.failFromRuntime(new CancellationException(
-                        "actor terminated before its callable completed"));
-            }
+            completion.failFromRuntime(new CancellationException(
+                    "actor terminated before its callable completed"));
         });
 
         try {
