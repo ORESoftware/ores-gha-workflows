@@ -2258,18 +2258,17 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         private final OresFuture<ActorRef<M>> readiness;
+        private final CompletableFuture<Boolean> termination = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
-            this.readiness = new OresFuture<>(() -> {
-                ActorCell<?> cell = actors.get(id);
-                if (cell != null) cell.stop();
-            });
+            this.readiness = new OresFuture<>(() -> requestStop(id));
         }
 
         public ActorId id() { return id; }
         private OresFuture<ActorRef<M>> readiness() { return readiness; }
+        private CompletionStage<Boolean> termination() { return termination; }
         private void markReady() { readiness.completeFromRuntime(this); }
         private void failReady(Throwable failure) {
             if (!readiness.isDone()) readiness.failFromRuntime(failure);
@@ -2910,13 +2909,7 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
-            if (ref != null && ref.isAlive()) {
-                try {
-                    ref.stop();
-                } catch (IllegalStateException ignored) {
-                    // A concurrent actor exit won the race.
-                }
-            }
+            if (ref != null) requestStop(ref.id());
         });
 
         ActorRef<M> ref = spawnInternal(
@@ -2952,6 +2945,15 @@ public final class ActorRuntime implements AutoCloseable {
         ref.readiness().whenComplete((readyRef, startupFailure) -> {
             if (startupFailure != null && !completion.isDone()) {
                 completion.failFromRuntime(OresFuture.unwrap(startupFailure));
+            }
+        });
+        ref.termination().whenComplete((normalTermination, terminationFailure) -> {
+            if (completion.isDone()) return;
+            if (terminationFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
+            } else {
+                completion.failFromRuntime(new CancellationException(
+                        "actor terminated before its callable completed"));
             }
         });
 
@@ -3299,6 +3301,19 @@ public final class ActorRuntime implements AutoCloseable {
         // deterministic teardown. Keep it alive until finalization has closed
         // private memory, drained reservations, and unregistered the cell.
         return cell != null && !cell.finalized();
+    }
+
+    /**
+     * Nonblocking cancellation primitive used by runtime-owned Futures.
+     *
+     * This only requests actor termination; it never waits for finalization and
+     * therefore is safe to invoke from an actor carrier or async completion
+     * callback. The public stop(ActorRef) host API remains the synchronization
+     * point that may wait for deterministic teardown.
+     */
+    private void requestStop(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell != null) cell.stop();
     }
 
     public void stop(ActorRef<?> ref) {
@@ -5048,6 +5063,12 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
+            }
+            Throwable terminalCause = ref.terminationCause.get();
+            if (terminalCause == null) {
+                ref.termination.complete(Boolean.TRUE);
+            } else {
+                ref.termination.completeExceptionally(terminalCause);
             }
             unregisterActor(this);
             lifecycleLock.notifyAll();
