@@ -1376,20 +1376,96 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void productionDefaultsPartitionBaseWorkersAcrossThreeDomains() {
+    void productionDefaultsUseThreeElasticFiveToTwentyCarrierPools() {
         var config = ActorRuntime.DispatcherConfig.defaultsForProcessors(16);
 
-        assertEquals(
-                16,
-                config.privateParallelism()
-                        + config.sharedParallelism()
-                        + config.untrustedParallelism(),
-                "base actor carriers should partition, not multiply, the CPU budget");
-        assertTrue(config.sharedParallelism() >= 2,
-                "shared/root domain needs a spare carrier when root synchronously awaits a shared actor");
-        assertTrue(config.untrustedParallelism() < config.sharedParallelism());
+        assertEquals(5, config.privateParallelism());
+        assertEquals(5, config.sharedParallelism());
+        assertEquals(5, config.untrustedParallelism());
+        assertEquals(20, config.maxParallelismFor(ActorRuntime.ActorKind.PRIVATE));
+        assertEquals(20, config.maxParallelismFor(ActorRuntime.ActorKind.SHARED));
+        assertEquals(20, config.maxParallelismFor(ActorRuntime.ActorKind.UNTRUSTED));
         assertTrue(config.maxCompensatingThreads() > 0);
         assertTrue(config.maxMessageNanos() >= config.maxBatchNanos());
+    }
+
+    @Test
+    void everyActorKindHasAtMostOneActiveCarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            int messages = 32;
+
+            AtomicInteger privateActive = new AtomicInteger();
+            AtomicInteger privateMax = new AtomicInteger();
+            CountDownLatch privateDone = new CountDownLatch(messages);
+            var privateRef = runtime.<Integer>spawnPrivateTrusted(ignored -> (message, turn) -> {
+                int now = privateActive.incrementAndGet();
+                privateMax.accumulateAndGet(now, Math::max);
+                try {
+                    Thread.sleep(1);
+                } finally {
+                    privateActive.decrementAndGet();
+                    privateDone.countDown();
+                }
+            });
+
+            AtomicInteger sharedActive = new AtomicInteger();
+            AtomicInteger sharedMax = new AtomicInteger();
+            CountDownLatch sharedDone = new CountDownLatch(messages);
+            var sharedRef = runtime.<Integer>spawnSharedTrusted(ignored -> (message, turn) -> {
+                int now = sharedActive.incrementAndGet();
+                sharedMax.accumulateAndGet(now, Math::max);
+                try {
+                    Thread.sleep(1);
+                } finally {
+                    sharedActive.decrementAndGet();
+                    sharedDone.countDown();
+                }
+            });
+
+            AtomicInteger untrustedActive = new AtomicInteger();
+            AtomicInteger untrustedMax = new AtomicInteger();
+            CountDownLatch untrustedDone = new CountDownLatch(messages);
+            ActorRuntime.HttpResponseTransport responseTransport = source -> {
+                int now = untrustedActive.incrementAndGet();
+                untrustedMax.accumulateAndGet(now, Math::max);
+                try {
+                    Thread.sleep(1);
+                    int remaining = source.remaining();
+                    source.position(source.limit());
+                    return remaining;
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException("interrupted", interrupted);
+                } finally {
+                    untrustedActive.decrementAndGet();
+                    untrustedDone.countDown();
+                }
+            };
+            var untrustedRef = runtime.<Integer>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    ActorRuntime.UntrustedActorLimits.defaults(),
+                    responseTransport,
+                    ignored -> (message, turn) ->
+                            turn.httpResponse().orElseThrow().write(
+                                    java.nio.ByteBuffer.wrap(new byte[] { 1 })));
+
+            for (int i = 0; i < messages; i++) {
+                privateRef.send(i);
+                sharedRef.send(i);
+                untrustedRef.send(i);
+            }
+
+            assertTrue(privateDone.await(5, TimeUnit.SECONDS));
+            assertTrue(sharedDone.await(5, TimeUnit.SECONDS));
+            assertTrue(untrustedDone.await(5, TimeUnit.SECONDS));
+            assertEquals(1, privateMax.get());
+            assertEquals(1, sharedMax.get());
+            assertEquals(1, untrustedMax.get());
+
+            privateRef.stop();
+            sharedRef.stop();
+            untrustedRef.stop();
+        }
     }
 
     @Test
