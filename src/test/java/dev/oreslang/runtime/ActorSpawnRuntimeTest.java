@@ -145,6 +145,42 @@ final class ActorSpawnRuntimeTest {
     }
 
     @Test
+    void cancellingChildSpawnFromSingleCarrierActorNeverBlocksTheCarrier() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                Long.MAX_VALUE,
+                64);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch parentCompleted = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> parent = runtime.spawnPrivateTrusted(
+                    context -> (message, turn) -> {
+                        ActorRuntime.ActorSpawn<String, String> child =
+                                turn.runtime().spawnInvocation(
+                                        ActorRuntime.ActorKind.PRIVATE,
+                                        "child",
+                                        (childMessage, childContext) -> childMessage);
+
+                        assertTrue(child.result().cancel(true));
+                        parentCompleted.countDown();
+                        turn.self().stop();
+                    });
+
+            parent.send("go");
+
+            assertTrue(
+                    parentCompleted.await(100, TimeUnit.MILLISECONDS),
+                    "Future cancellation from an actor turn must only request child stop; "
+                            + "it must never synchronously wait for child finalization");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
     void contextEntryWatchdogSettlesReadyAndResultWithoutWaitingForCarrierUnwind() throws Exception {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
                 1,
