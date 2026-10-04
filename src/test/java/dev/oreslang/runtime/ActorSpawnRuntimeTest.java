@@ -145,6 +145,56 @@ final class ActorSpawnRuntimeTest {
     }
 
     @Test
+    void stopAtReadyBoundarySettlesResultAndDoneInsteadOfLeavingThemPending() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                Long.MAX_VALUE,
+                64);
+        CountDownLatch allowEntry = new CountDownLatch(1);
+        ActorRuntime.TurnExecutor gatedEntry = turn -> {
+            try {
+                if (!allowEntry.await(2, TimeUnit.SECONDS)) {
+                    throw new AssertionError("timed out waiting to enter actor turn");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException(
+                        "interrupted before actor turn entry");
+            }
+            turn.run();
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                config,
+                gatedEntry)) {
+            ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    "never-delivered",
+                    (message, context) -> fail("callable must not run after READY-boundary stop"));
+
+            spawn.ready().whenComplete((ref, failure) -> {
+                if (failure == null) ref.stop();
+            });
+            allowEntry.countDown();
+
+            assertEquals(spawn.id(), spawn.ready().get(2, TimeUnit.SECONDS).id());
+
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> spawn.result().get(2, TimeUnit.SECONDS));
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> spawn.done().get(2, TimeUnit.SECONDS));
+            assertTrue(spawn.result().isDone());
+            assertTrue(spawn.done().isDone());
+        }
+    }
+
+    @Test
     void cancellingChildSpawnFromSingleCarrierActorNeverBlocksTheCarrier() throws Exception {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
                 1,
