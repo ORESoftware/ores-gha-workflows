@@ -52,7 +52,8 @@ public final class OresContext implements AutoCloseable {
                 generationLeaseFactory,
                 runtimePlacement);
         this.garbageCollector = new RuntimeGarbageCollector();
-        this.actors.setActorExitHook(garbageCollector::retireActorDomain);
+        this.actors.installActorExitHookFromRuntime(
+                garbageCollector::retireActorDomain);
     }
 
     public static OresContext get(Node node) {
