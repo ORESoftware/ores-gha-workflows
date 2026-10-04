@@ -2237,10 +2237,7 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
-            this.readiness = new OresFuture<>(() -> {
-                ActorCell<?> cell = actors.get(id);
-                if (cell != null) cell.stop();
-            });
+            this.readiness = new OresFuture<>(() -> requestStop(id));
         }
 
         public ActorId id() { return id; }
@@ -2885,13 +2882,7 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
-            if (ref != null && ref.isAlive()) {
-                try {
-                    ref.stop();
-                } catch (IllegalStateException ignored) {
-                    // A concurrent actor exit won the race.
-                }
-            }
+            if (ref != null) requestStop(ref.id());
         });
 
         ActorRef<M> ref = spawnInternal(
@@ -3268,6 +3259,19 @@ public final class ActorRuntime implements AutoCloseable {
         // deterministic teardown. Keep it alive until finalization has closed
         // private memory, drained reservations, and unregistered the cell.
         return cell != null && !cell.finalized();
+    }
+
+    /**
+     * Nonblocking cancellation primitive used by runtime-owned Futures.
+     *
+     * This only requests actor termination; it never waits for finalization and
+     * therefore is safe to invoke from an actor carrier or async completion
+     * callback. The public stop(ActorRef) host API remains the synchronization
+     * point that may wait for deterministic teardown.
+     */
+    private void requestStop(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell != null) cell.stop();
     }
 
     public void stop(ActorRef<?> ref) {
