@@ -453,7 +453,7 @@ final class UntrustedActorRuntimeTest {
     }
 
     @Test
-    void outboundMailboxDataFromUntrustedActorIsCapped() throws Exception {
+    void outboundOutboxDataFromUntrustedActorIsCapped() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var target = runtime.<Object>spawnPrivate(() -> (message, turn) -> { });
             var limits = new ActorRuntime.UntrustedActorLimits(
@@ -476,12 +476,12 @@ final class UntrustedActorRuntimeTest {
             IllegalStateException failure = assertInstanceOf(
                     IllegalStateException.class,
                     ref.failure().orElseThrow());
-            assertTrue(failure.getMessage().contains("outbound mailbox payload"));
+            assertTrue(failure.getMessage().contains("outbox payload"));
         }
     }
 
     @Test
-    void httpResponseStreamsWithoutMailboxRoundTrip() throws Exception {
+    void httpResponseStreamsWithoutInboxOutboxRoundTrip() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             RecordingResponse response = new RecordingResponse();
             var limits = new ActorRuntime.UntrustedActorLimits(

@@ -335,7 +335,7 @@ final class ActorRuntimeTest {
             var ref = runtime.<String>spawnPrivate(small, () -> (message, context) -> { });
             String tooLarge = "x".repeat(9 * 1024 * 1024);
             IllegalStateException failure = assertThrows(IllegalStateException.class, () -> ref.send(tooLarge));
-            assertTrue(failure.getMessage().contains("private actor mailbox limit exceeded"));
+            assertTrue(failure.getMessage().contains("private actor inbox limit exceeded"));
             assertEquals(0L, runtime.privateMemoryBytes(), "failed admission must roll back aggregate accounting");
         }
     }
@@ -1220,7 +1220,7 @@ final class ActorRuntimeTest {
                 @Override
                 public Object get(int index) {
                     traversed.set(true);
-                    throw new AssertionError("message graph must not be traversed after mailbox admission fails");
+                    throw new AssertionError("message graph must not be traversed after inbox admission fails");
                 }
 
                 @Override
@@ -1232,7 +1232,7 @@ final class ActorRuntimeTest {
             IllegalStateException error = assertThrows(
                     IllegalStateException.class,
                     () -> ref.send(shouldNotTraverse));
-            assertTrue(error.getMessage().contains("mailbox limit exceeded"));
+            assertTrue(error.getMessage().contains("inbox limit exceeded"));
             assertFalse(traversed.get());
 
             release.countDown();
@@ -1318,7 +1318,7 @@ final class ActorRuntimeTest {
             IllegalStateException rejected = assertThrows(
                     IllegalStateException.class,
                     () -> ref.send(second));
-            assertTrue(rejected.getMessage().contains("mailbox limit exceeded"));
+            assertTrue(rejected.getMessage().contains("inbox limit exceeded"));
             assertFalse(secondTraversalRan.get());
 
             releaseFirstTraversal.countDown();
