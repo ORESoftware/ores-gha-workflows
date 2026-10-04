@@ -11,6 +11,31 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
+
+    @Test
+    void sharedIsContextualModifierAndRemainsAvailableAsOrdinaryIdentifier() {
+        var tokens = new Lexer("shared actor shared").scan();
+        assertEquals(Token.Type.IDENT, tokens.get(0).type());
+        assertEquals("shared", tokens.get(0).lexeme());
+        assertEquals(Token.Type.ACTOR, tokens.get(1).type());
+        assertEquals(Token.Type.IDENT, tokens.get(2).type());
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                shared actor Worker {
+                  pub receive_message(int message) => void {
+                    val shared = message;
+                    stdio.println(shared);
+                    return;
+                  }
+                }
+
+                fnc ordinary() => int {
+                  val shared = 41;
+                  return shared + 1;
+                }
+                """));
+    }
+
     @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
