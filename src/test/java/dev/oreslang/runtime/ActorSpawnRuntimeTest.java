@@ -95,6 +95,44 @@ final class ActorSpawnRuntimeTest {
     }
 
     @Test
+    void watchdogFailureDominatesCallableThatIgnoresInterruptAndReturnsLate() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(1),
+                TimeUnit.MILLISECONDS.toNanos(20),
+                1,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    "late-success",
+                    (message, context) -> {
+                        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(80);
+                        while (System.nanoTime() < until) {
+                            // Deliberately consume and ignore the watchdog interrupt.
+                            Thread.interrupted();
+                        }
+                        return message;
+                    });
+
+            ActorRuntime.ActorRef<String> ref = spawn.ready().get(2, TimeUnit.SECONDS);
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class,
+                    () -> spawn.result().get(2, TimeUnit.SECONDS));
+
+            assertInstanceOf(ActorRuntime.ActorTurnExceededException.class, failure.getCause());
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    ActorRuntime.ActorTurnExceededException.class,
+                    ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
     void callableFailureFailsResultAndRecordsActorTerminationCause() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorSpawn<String, String> spawn = runtime.spawnInvocation(
