@@ -3770,7 +3770,7 @@ public final class ActorRuntime implements AutoCloseable {
                 estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
             } catch (IllegalStateException tooLarge) {
                 throw new IllegalStateException(
-                        "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
+                        "private actor inbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
             }
             try {
@@ -3793,7 +3793,7 @@ public final class ActorRuntime implements AutoCloseable {
                 reservation = cell.memorySlice.reserveInbox(prepared);
             } catch (IllegalStateException exceeded) {
                 throw new IllegalStateException(
-                        "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
+                        "private actor inbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
                         exceeded);
             }
             release = reservation::close;
