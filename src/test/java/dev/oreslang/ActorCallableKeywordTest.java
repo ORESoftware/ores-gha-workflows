@@ -78,13 +78,20 @@ final class ActorCallableKeywordTest {
                 }
 
                 pub routine main() => void {
-                  stdio.stdout.write(add_one(41));
+                  val add = spawn add_one(41);
+                  stdio.stdout.write(await add.result);
                   stdio.stdout.write(":");
-                  shared_emit("shared");
+
+                  val shared = spawn shared_emit("shared");
+                  await shared.done;
                   stdio.stdout.write(":");
-                  stdio.stdout.write(double_it(21));
+
+                  val doubled = spawn double_it(21);
+                  stdio.stdout.write(await doubled.result);
                   stdio.stdout.write(":");
-                  private_emit("private");
+
+                  val private_spawn = spawn private_emit("private");
+                  await private_spawn.done;
                   return;
                 }
                 """);
@@ -165,7 +172,7 @@ final class ActorCallableKeywordTest {
                         }
                         """)));
 
-        assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"));
+        assertTrue(failure.getMessage().contains("spawn"));
     }
 
     private static String run(String program) throws Exception {

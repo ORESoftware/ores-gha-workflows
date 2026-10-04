@@ -203,7 +203,7 @@ final class UntrustedActorSandboxTest {
     }
 
     @Test
-    void outboundMailboxDataFromUntrustedActorIsIndependentlyBounded() throws Exception {
+    void outboundOutboxDataFromUntrustedActorIsIndependentlyBounded() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             ActorRuntime.ActorRef<Object> parent =
                     runtime.<Object>spawnPrivate(context -> (message, turn) -> { });
@@ -228,12 +228,12 @@ final class UntrustedActorSandboxTest {
             IllegalStateException failure = assertInstanceOf(
                     IllegalStateException.class,
                     sandbox.failure().orElseThrow());
-            assertTrue(failure.getMessage().contains("outbound mailbox payload exceeds 16 bytes"));
+            assertTrue(failure.getMessage().contains("outbox payload exceeds 16 bytes"));
         }
     }
 
     @Test
-    void directHttpResponseBypassesMailboxAndIsByteBounded() throws Exception {
+    void directHttpResponseBypassesInboxOutboxAndIsByteBounded() throws Exception {
         RecordingTransport transport = new RecordingTransport();
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var ref = runtime.<String>spawnUntrusted(

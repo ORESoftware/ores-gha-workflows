@@ -22,6 +22,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final OresVM vm;
     private final ActorRuntime actors;
     private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
@@ -38,11 +39,20 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        this.actors = ActorRuntime.processShared(
+        this.vm = OresVM.contextOwner(env.getApplicationArguments());
+        ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory =
+                vm.generationLeaseFactory(env.getApplicationArguments());
+        ActorRuntime.RuntimePlacement runtimePlacement =
+                isolatePolicy.adversarial()
+                        ? ActorRuntime.RuntimePlacement.SPAWNED_GRAAL_ISOLATE
+                        : ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE;
+        this.actors = vm.newActorRuntime(
                 isolatePolicy,
-                this::executeActorTurn);
+                this::executeActorTurn,
+                generationLeaseFactory,
+                runtimePlacement);
         this.garbageCollector = new RuntimeGarbageCollector();
-        this.actors.setActorExitHook(garbageCollector::retireActorDomain);
+        this.actors.installActorExitHookFromKernel(garbageCollector::retireActorDomain);
     }
 
     public static OresContext get(Node node) {
@@ -163,6 +173,10 @@ public final class OresContext implements AutoCloseable {
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
                 "language", "oreslang",
+                "vm_id", vm.id().toString(),
+                "scheduler_domains", vm.schedulerTopology().domains().stream()
+                        .map(Enum::name)
+                        .toList(),
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get());
@@ -171,7 +185,7 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         try {
-            actors.close();
+            actors.closeFromSupervisor();
         } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
