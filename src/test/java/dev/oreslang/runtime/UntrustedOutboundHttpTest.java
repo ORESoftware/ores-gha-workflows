@@ -144,10 +144,9 @@ final class UntrustedOutboundHttpTest {
                             throw new AssertionError(
                                     "cancel request must not release permit before host termination");
                         }
-                        if (upstream.size() != 1) {
-                            throw new AssertionError(
-                                    "second request must not reach host transport");
-                        }
+                        // Host-side transport call accounting is asserted after
+                        // the actor terminates. Keeping that host list out of this
+                        // closure is itself part of the capture-free sandbox contract.
 
                         // This transport intentionally ignores cancellation.
                         // Therefore the host operation is still genuinely in
