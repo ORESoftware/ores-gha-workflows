@@ -2233,6 +2233,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         private final OresFuture<ActorRef<M>> readiness;
+        private final CompletableFuture<Boolean> termination = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -2242,6 +2243,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         private OresFuture<ActorRef<M>> readiness() { return readiness; }
+        private CompletionStage<Boolean> termination() { return termination; }
         private void markReady() { readiness.completeFromRuntime(this); }
         private void failReady(Throwable failure) {
             if (!readiness.isDone()) readiness.failFromRuntime(failure);
@@ -2918,6 +2920,15 @@ public final class ActorRuntime implements AutoCloseable {
         ref.readiness().whenComplete((readyRef, startupFailure) -> {
             if (startupFailure != null && !completion.isDone()) {
                 completion.failFromRuntime(OresFuture.unwrap(startupFailure));
+            }
+        });
+        ref.termination().whenComplete((normalTermination, terminationFailure) -> {
+            if (completion.isDone()) return;
+            if (terminationFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
+            } else {
+                completion.failFromRuntime(new CancellationException(
+                        "actor terminated before its callable completed"));
             }
         });
 
@@ -4956,6 +4967,12 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
+            }
+            Throwable terminalCause = ref.terminationCause.get();
+            if (terminalCause == null) {
+                ref.termination.complete(Boolean.TRUE);
+            } else {
+                ref.termination.completeExceptionally(terminalCause);
             }
             unregisterActor(this);
             lifecycleLock.notifyAll();
