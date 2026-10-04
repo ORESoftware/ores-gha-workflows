@@ -59,6 +59,20 @@ final class ReservedKeywordTest {
                 }
                 """)));
 
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Holder
+                  stop() => int { return 1; }
+                  do() => int { return 2; }
+                  done() => int { return 3; }
+                end
+
+                pub routine main() => void {
+                  val holder = new Holder();
+                  stdio.println(holder.stop() + holder.do() + holder.done());
+                  return;
+                }
+                """)));
+
         for (String keyword : List.of("of", "is", "as", "actor", "isolate", "recover", "panic")) {
             assertReservedFailure("""
                     fnc %s() => void {
@@ -95,13 +109,15 @@ final class ReservedKeywordTest {
                     end
                     """.formatted(keyword), keyword);
 
-            assertReservedFailure("""
-                    define class Holder
-                      %s() => void {
-                        return;
-                      }
-                    end
-                    """.formatted(keyword), keyword);
+            if (!List.of("stop", "do", "done").contains(keyword)) {
+                assertReservedFailure("""
+                        define class Holder
+                          %s() => void {
+                            return;
+                          }
+                        end
+                        """.formatted(keyword), keyword);
+            }
 
             assertReservedFailure("""
                     define class Holder

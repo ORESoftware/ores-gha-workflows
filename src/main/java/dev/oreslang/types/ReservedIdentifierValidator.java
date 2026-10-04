@@ -65,7 +65,7 @@ final class ReservedIdentifierValidator {
             types(iface.parents());
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                    name(fn.name(), "interface function");
+                    if (!isCallableOnlyReserved(fn.name())) name(fn.name(), "interface function");
                     names(fn.genericParameters(), "generic parameter");
                     parameters(fn.parameters());
                     type(fn.returnType());
@@ -96,7 +96,7 @@ final class ReservedIdentifierValidator {
     }
 
     private static void method(Ast.MethodDecl method) {
-        name(method.name(), "method");
+        if (!isCallableOnlyReserved(method.name())) name(method.name(), "method");
         if (method.explicitReceiverType() != null) type(method.explicitReceiverType());
         names(method.genericParameters(), "generic parameter");
         parameters(method.parameters());
@@ -185,7 +185,13 @@ final class ReservedIdentifierValidator {
             expression(conditional.whenTrue());
             expression(conditional.whenFalse());
         } else if (expr instanceof Ast.CallExpr call) {
-            expression(call.callee());
+            if (call.callee() instanceof Ast.NameExpr named && isCallableOnlyReserved(named.name())) {
+                // stop/do/done are reserved identifiers but legal callable names.
+            } else if (call.callee() instanceof Ast.MemberExpr member && isCallableOnlyReserved(member.member())) {
+                expression(member.receiver());
+            } else {
+                expression(call.callee());
+            }
             for (Ast.Expr argument : call.arguments()) expression(argument);
         } else if (expr instanceof Ast.MemberExpr member) {
             expression(member.receiver());
@@ -204,7 +210,7 @@ final class ReservedIdentifierValidator {
             for (Ast.Expr element : tuple.elements()) expression(element);
         } else if (expr instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
-                name(field.name(), "object field");
+                if (!isCallableOnlyReserved(field.name())) name(field.name(), "object field");
                 expression(field.value());
             }
         } else if (expr instanceof Ast.LambdaExpr lambda) {

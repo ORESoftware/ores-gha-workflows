@@ -224,7 +224,7 @@ public final class Parser {
             }
 
             if (match(FNC)) {
-                String memberName = consume(IDENT, "expected interface function name").lexeme();
+                String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -323,7 +323,7 @@ public final class Parser {
             if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
             return namespace + "." + symbol;
         }
-        return consume(IDENT, "expected method name (methods omit 'fnc')").lexeme();
+        return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
