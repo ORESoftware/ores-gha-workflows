@@ -377,6 +377,20 @@ public final class OwnershipChecker {
             }
             checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            if (concreteReceiver != null && concreteReceiver.name().equals("ActorSpawn")) {
+                return switch (member.member()) {
+                    case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
+                    case "ready", "done", "result" ->
+                            new ValueInfo(Ast.TypeRef.simple("Future"), ValueKind.MOVE_ONLY, null);
+                    default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                };
+            }
+            if (concreteReceiver != null && concreteReceiver.name().equals("ActorRef")) {
+                return switch (member.member()) {
+                    case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
+                    default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                };
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
@@ -416,6 +430,15 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            for (Ast.Expr argument : spawned.call().arguments()) {
+                ValueInfo info = checkExpr(argument, scope, true);
+                if (containsMutexGuardType(info.type)) {
+                    throw error("MutexGuard cannot cross an actor spawn boundary");
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.simple("ActorSpawn"), ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
@@ -424,6 +447,9 @@ public final class OwnershipChecker {
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
+            }
+            if (awaitedValue.type.name().equals("ActorSpawn")) {
+                return new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.MOVE_ONLY, null);
             }
             return awaitedValue;
         }
@@ -939,6 +965,7 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.SpawnExpr e) scanExpr(e.call(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
@@ -1398,7 +1425,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","void","ActorId","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))

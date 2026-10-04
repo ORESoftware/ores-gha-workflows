@@ -142,13 +142,24 @@ final class ParserTest {
     }
 
     @Test
-    void actorCallablesMayBeCalledButActorClassesCannotBeConstructedOrdinarily() {
+    void actorCallablesRequireSpawnAndActorClassesCannotBeConstructedOrdinarily() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc worker(int value) => int {
                   return value;
                 }
 
-                pub fnc good() => int {
+                pub fnc good() => void {
+                  val pending = spawn worker(1);
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc worker(int value) => int {
+                  return value;
+                }
+
+                pub fnc bad_call() => int {
                   return worker(1);
                 }
                 """)));
