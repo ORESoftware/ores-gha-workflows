@@ -148,6 +148,44 @@ Oreslang deliberately uses three executors:
 
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
 
+### Two-phase actor spawn
+
+Source-level actor callables use a two-phase launch contract:
+
+```text
+RESERVED -> STARTING -> READY -> TERMINATED
+                  \-> FAILED_TO_START
+```
+
+`spawn` returns at the RESERVED/admitted boundary with a lightweight
+`ActorSpawn` ticket. The synchronous path reserves the stable `ActorId`,
+creates the control futures, admits the initial message, and schedules the actor;
+it does not wait for behavior initialization or user actor code. This path is
+designed to be comfortably below 1 ms in the uncontended normal case for
+small/ordinary argument graphs, but the language does **not** promise a
+wall-clock deadline because OS scheduling, contention, sandbox admission, and
+host load are external variables. Initial actor-call arguments are validated
+and snapshotted/admitted synchronously so caller mutation cannot race actor
+startup; therefore spawn latency is also intentionally proportional to an
+unusually large argument graph. Bulk data should use bounded streaming,
+owned-region transfer, or other explicit capabilities rather than giant spawn
+arguments.
+
+The ticket's `ready` future completes only after actor behavior initialization
+succeeds and the mailbox/control endpoint is usable. `await spawn ...` is
+defined as awaiting that readiness future, not actor completion. A separate
+`done: Future<bool>` tracks callable completion for both actor functions and
+actor routines. Any non-void actor callable, whether `fnc` or `routine`,
+additionally exposes a `result` future. Startup failure settles readiness, done, and result exceptionally; no failed
+startup may leave a pending control future behind. Likewise, termination after
+READY but before callable completion settles `result`/`done` as cancelled
+rather than leaving either future pending. A successful or failed callable
+result is published only after the one-shot actor has left guest execution and
+finalized, so awaiting `result` or `done` is also a safe context-lifecycle
+boundary for embedders. Cancelling `ready`, `result`, or `done` only issues
+a nonblocking stop request; future cancellation must never wait for actor
+finalization on a carrier thread.
+
 Ordinary cancellation is observed at compiler-injected scheduler safepoints. A separate per-message watchdog enforces the configured hard turn deadline for all actor domains and can activate bounded compensation when a carrier remains stuck. Untrusted actors additionally have the independent lifetime watchdog and per-turn fuel budget. Every runtime-owned carrier clears watchdog interrupts before reuse. Security does not depend on the guest voluntarily yielding: untrusted statement/expression dispatch, loop backedges, and callable/recursion execution consume runtime fuel and recheck the deadline.
 
 
@@ -164,8 +202,31 @@ The default sandbox limits are:
 - HTTP request metadata budget: **64 KiB**, including an **8 KiB** path ceiling and at most **128** header lookups;
 - HTTP response body write budget: **16 MiB**;
 - HTTP response metadata budget: **128 headers / 64 KiB**;
+- concurrent outbound HTTP/HTTPS calls: **5 per actor by default** (configurable, runtime-enforced);
 - isolated actor heap: **64 MiB**;
 - mailbox: **128 messages**.
+
+Outbound networking is also object-capability based. If the supervisor supplies an
+`OutboundHttpTransport`, the untrusted actor receives an owner-only
+`OutboundHttpCapability`. It exposes asynchronous HTTP/HTTPS request futures,
+not sockets. The capability uses a per-actor semaphore whose default is five.
+Admission is fail-fast: once five host operations are actually in flight, a
+sixth future completes with `HttpConcurrencyLimitExceededException` without
+invoking the transport. Cancellation does not release that semaphore permit
+until the underlying transport itself completes, preventing cancel/retry churn
+from exceeding the real network concurrency budget. Actor teardown cancels all
+tracked outbound operations.
+
+The capability rejects `CONNECT`, protocol-upgrade/WebSocket headers,
+non-HTTP(S) schemes, and user-info-bearing URLs. Request and response bodies use
+the same bounded HTTP byte budgets as the sandbox. The host may maintain
+HTTP/1.1 keep-alive or HTTP/2/3 connection pooling internally, but no raw TCP
+handle, pool handle, stateful session, or cookie jar is exposed to guest code.
+
+`OresFuture<T>` is backed by `CompletionStage` at the host boundary, and
+`OresFutures.all` / `race` compose operations without creating more actors
+or OS threads. Actor-side `await` must be lowered to a suspended continuation;
+blocking a carrier on `get()` or `join()` is forbidden.
 
 HTTP is granted as an **object capability to one accepted exchange**, not as ambient network access. A host may bind `HttpRequestTransport` / `HttpResponseTransport` to its HTTP parser, event loop, `SocketChannel`, or equivalent. The actor receives owner-bound `HttpRequestCapability` / `HttpResponseCapability` handles through its turn context. Request-body chunks are read from the host request stream and response-body chunks are written to the host response stream directly; they are not serialized through the actor mailbox. `PrivateMemoryBlock.readFrom(...)` and `writeTo(...)` can bind those streams directly to the actor's FFM-backed native region, avoiding an intermediate JVM heap byte array as well. The handles are not Sendable, cannot be transferred to another actor, and expose no general socket/file-descriptor operations. This also keeps the model valid for HTTP/2 or HTTP/3, where a raw connection fd would be the wrong abstraction.
 

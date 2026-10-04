@@ -251,8 +251,9 @@ final class LanguageHardeningTest {
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc current() => int {
-                    return self.balance;
+                  pub receive_message(int delta) => void {
+                    self.balance = self.balance + delta;
+                    return;
                   }
                 }
                 """));

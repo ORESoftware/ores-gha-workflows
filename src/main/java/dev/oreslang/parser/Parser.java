@@ -241,6 +241,7 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean sharedIngressSeen = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -264,7 +265,25 @@ public final class Parser {
             } else {
                 match(FNC);
             }
-            methods.add(parseMethod(annotations, mods));
+            Ast.MethodDecl method = parseMethod(annotations, mods);
+            if (actorKind == Ast.ActorKind.SHARED
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                if (method.isStatic()) {
+                    throw error(previous(),
+                            "shared actor public surface is mailbox-only; static helpers must be private");
+                }
+                if (!method.name().equals("receive_message")) {
+                    throw error(previous(),
+                            "shared actors expose exactly one mailbox ingress named 'receive_message'; "
+                                    + "all other methods must be private");
+                }
+                if (sharedIngressSeen) {
+                    throw error(previous(),
+                            "shared actor may declare only one public 'receive_message' ingress");
+                }
+                sharedIngressSeen = true;
+            }
+            methods.add(method);
         }
 
         consume(terminator, braceStyle
@@ -1049,6 +1068,14 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(SPAWN)) {
+            Token keyword = previous();
+            Ast.Expr target = parseUnary();
+            if (!(target instanceof Ast.CallExpr call)) {
+                throw error(keyword, "'spawn' must target a direct actor fnc/routine call");
+            }
+            return new Ast.SpawnExpr(call);
+        }
         return parsePostfix();
     }
 
@@ -1122,7 +1149,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, DONE, AWAIT, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, UNTRUSTED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
+                    NEW, DONE, AWAIT, SPAWN, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, UNTRUSTED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;

@@ -10,6 +10,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -183,12 +184,33 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             List<?> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor callable '" + fn.name()
+                                + "' cannot be invoked directly; use spawn " + fn.name() + "(...)");
+            }
+            return callFunctionBody(fn, normalized);
+        }
+
+        private Object spawnFunction(Ast.CallExpr call, Env env) {
+            Ast.FunctionDecl fn;
+            if (call.callee() instanceof Ast.NameExpr name) {
+                fn = findFunction(name.name());
+            } else if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace) {
+                fn = functions.get(namespace.name() + "." + member.member());
+            } else {
+                throw new IllegalArgumentException(
+                        "spawn requires a direct actor fnc/routine call");
+            }
+            if (fn == null) throw new IllegalArgumentException("unknown spawn target");
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                return callFunctionBody(fn, normalized);
+                throw new IllegalArgumentException(
+                        "spawn target '" + fn.name() + "' is not an actor callable");
             }
 
             ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
-                case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
+                case NONE -> throw new AssertionError("non-actor callable reached spawn lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                 case UNTRUSTED -> throw new SecurityException(
@@ -196,7 +218,9 @@ public final class OresEvalRootNode extends RootNode {
                                 + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
-            return context.actors().invoke(
+            List<Object> evaluated = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+            List<?> normalized = normalizeFunctionArguments(fn, evaluated);
+            return context.actors().spawnInvocation(
                     runtimeKind,
                     normalized,
                     (delivered, actorContext) -> callFunctionBody(fn, delivered));
@@ -367,6 +391,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("Futures")) return new FuturesFacade();
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -514,13 +539,26 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args);
             }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return spawnFunction(spawned.call(), env);
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) {
+                CompletionStage<?> stage = null;
+                if (value instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
+                    stage = spawn.ready();
+                } else if (value instanceof CompletionStage<?> futureValue) {
+                    stage = futureValue;
+                }
+                if (stage != null) {
                     var future = stage.toCompletableFuture();
                     if (ActorRuntime.inActorExecution() && !future.isDone()) {
                         throw new IllegalStateException(
                                 "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    }
+                    if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
+                        throw new IllegalStateException(
+                                "await would block an adversarial serialized root context; continuation lowering must suspend/resume before awaiting actor readiness/result");
                     }
                     return future.join();
                 }
@@ -586,6 +624,51 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof FuturesFacade futures) {
+                return switch (name) {
+                    case "all" -> (Invokable) futures::all;
+                    case "race" -> (Invokable) futures::race;
+                    default -> throw new IllegalArgumentException("unknown Futures member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
+                return switch (name) {
+                    case "id" -> spawn.id();
+                    case "ready" -> spawn.ready();
+                    case "done" -> spawn.done();
+                    case "result" -> spawn.result();
+                    default -> throw new IllegalArgumentException("unknown ActorSpawn member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorRef<?> ref) {
+                return switch (name) {
+                    case "id" -> ref.id();
+                    case "is_alive" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.is_alive");
+                        return ref.isAlive();
+                    };
+                    default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
+                };
+            }
+            if (receiver instanceof CompletionStage<?> stage) {
+                var future = stage.toCompletableFuture();
+                return switch (name) {
+                    case "is_done" -> (Invokable) args -> {
+                        requireZero(args, "Future.is_done");
+                        return future.isDone();
+                    };
+                    case "is_cancelled" -> (Invokable) args -> {
+                        requireZero(args, "Future.is_cancelled");
+                        return future.isCancelled();
+                    };
+                    case "cancel" -> (Invokable) args -> {
+                        requireZero(args, "Future.cancel");
+                        return future.cancel(true);
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Future member " + name + "; use await to obtain its value");
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -1427,6 +1510,34 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+    }
+    private record FuturesFacade() {
+        private Object all(List<Object> args) {
+            return OresFutures.all(requireFutures(args, "Futures.all"));
+        }
+
+        private Object race(List<Object> args) {
+            return OresFutures.race(requireFutures(args, "Futures.race"));
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<CompletionStage<Object>> requireFutures(
+                List<Object> args,
+                String operation) {
+            requireOne(args, operation);
+            if (!(args.getFirst() instanceof List<?> values)) {
+                throw new IllegalArgumentException(operation + " expects a list of Future values");
+            }
+            ArrayList<CompletionStage<Object>> futures = new ArrayList<>(values.size());
+            for (Object value : values) {
+                if (!(value instanceof CompletionStage<?> stage)) {
+                    throw new IllegalArgumentException(
+                            operation + " expects every list element to be a Future");
+                }
+                futures.add((CompletionStage<Object>) stage);
+            }
+            return List.copyOf(futures);
+        }
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
