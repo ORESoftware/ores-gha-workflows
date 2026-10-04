@@ -82,8 +82,8 @@ final class ActorCallableKeywordTest {
                   stdio.stdout.write(await add.result);
                   stdio.stdout.write(":");
 
-                  val shared = spawn shared_emit("shared");
-                  await shared.done;
+                  val shared_task = spawn shared_emit("shared");
+                  await shared_task.done;
                   stdio.stdout.write(":");
 
                   val doubled = spawn double_it(21);
