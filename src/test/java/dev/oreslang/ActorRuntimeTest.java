@@ -1049,24 +1049,17 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void actorCodeCannotCloseItsOwnRuntime() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            CountDownLatch checked = new CountDownLatch(1);
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-
-            var ref = runtime.<String>spawn(() -> (message, context) -> {
-                try {
-                    assertThrows(SecurityException.class, context.runtime()::close);
-                } catch (Throwable problem) {
-                    failure.set(problem);
-                } finally {
-                    checked.countDown();
-                }
-            });
-
-            ref.send("check");
-            assertTrue(checked.await(2, TimeUnit.SECONDS));
-            assertNull(failure.get());
+    void actorContextDoesNotExposeRawRuntimeAuthority() {
+        for (var method : ActorRuntime.ActorContext.class.getMethods()) {
+            assertNotEquals(
+                    ActorRuntime.class,
+                    method.getReturnType(),
+                    "actor context must not expose the owning runtime: " + method);
+            assertNotEquals("runtime", method.getName());
+            assertNotEquals("close", method.getName());
+            assertFalse(
+                    method.getName().contains("Trusted"),
+                    "actor context must not expose trusted host construction: " + method);
         }
     }
 
@@ -1077,7 +1070,7 @@ final class ActorRuntimeTest {
             var ref = runtime.<String>spawnPrivate(
                     strict,
                     factoryContext -> (message, context) ->
-                            context.runtime().shareReadonly(List.of("secret")));
+                            context.shareReadonly(List.of("secret")));
 
             ref.send("check");
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
@@ -1148,7 +1141,7 @@ final class ActorRuntimeTest {
 
             var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
                 try {
-                    context.runtime().shareReadonly(List.of("private"));
+                    context.shareReadonly(List.of("private"));
                 } catch (Throwable failure) {
                     observed.set(failure);
                 } finally {
@@ -1474,12 +1467,12 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void rootProcessExecutesOnSharedCarrierPool() {
+    void rootProcessExecutesOnControlPlaneCarrierPool() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             String threadName = runtime.executeRootTask(
                     () -> Thread.currentThread().getName());
             assertTrue(
-                    threadName.startsWith("ores-shared-actor-dispatcher-"),
+                    threadName.startsWith("ores-control-plane-dispatcher-"),
                     threadName);
         }
     }
@@ -1633,14 +1626,14 @@ final class ActorRuntimeTest {
 
             String firstThread = first.executeRootTask(
                     () -> Thread.currentThread().getName());
-            assertTrue(firstThread.startsWith("ores-process-shared-actor-dispatcher-"),
+            assertTrue(firstThread.startsWith("ores-process-control-plane-dispatcher-"),
                     firstThread);
 
             first.close();
 
             String secondThread = second.executeRootTask(
                     () -> Thread.currentThread().getName());
-            assertTrue(secondThread.startsWith("ores-process-shared-actor-dispatcher-"),
+            assertTrue(secondThread.startsWith("ores-process-control-plane-dispatcher-"),
                     secondThread);
         } finally {
             try {
@@ -1679,8 +1672,12 @@ final class ActorRuntimeTest {
                     }));
 
             assertTrue(
-                    runtime.dispatcherStats(ActorRuntime.ActorKind.SHARED).overrunTurns() >= 1,
-                    "root wall-time expiration must be observable on the shared dispatcher");
+                    runtime.controlDispatcherStats().overrunTurns() >= 1,
+                    "root wall-time expiration must be observable on the control-plane dispatcher");
+            assertEquals(
+                    0,
+                    runtime.dispatcherStats(ActorRuntime.ActorKind.SHARED).overrunTurns(),
+                    "root wall-time expiration must not contaminate shared-actor metrics");
         }
     }
 
@@ -1729,7 +1726,7 @@ final class ActorRuntimeTest {
 
             assertTrue(
                     actorRan.await(2, TimeUnit.SECONDS),
-                    "a root/main task must leave shared carrier capacity for shared actors");
+                    "a control-plane root/main task must not consume shared-actor carriers");
 
             releaseRoot.countDown();
             rootCaller.join(2_000);
