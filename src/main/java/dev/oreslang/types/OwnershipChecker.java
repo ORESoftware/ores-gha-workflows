@@ -456,7 +456,7 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
-                if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
+                if (containsAcquiredMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
             }
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
         }
