@@ -176,15 +176,9 @@ succeeds and the mailbox/control endpoint is usable. `await spawn ...` is
 defined as awaiting that readiness future, not actor completion. A separate
 `done: Future<bool>` tracks callable completion for both actor functions and
 actor routines. Any non-void actor callable, whether `fnc` or `routine`,
-additionally exposes a `result` future. Startup failure settles readiness, done, and result exceptionally; no failed
-startup may leave a pending control future behind. Likewise, termination after
-READY but before callable completion settles `result`/`done` as cancelled
-rather than leaving either future pending. A successful or failed callable
-result is published only after the one-shot actor has left guest execution and
-finalized, so awaiting `result` or `done` is also a safe context-lifecycle
-boundary for embedders. Cancelling `ready`, `result`, or `done` only issues
-a nonblocking stop request; future cancellation must never wait for actor
-finalization on a carrier thread.
+additionally exposes a `result` future. Startup failure settles readiness,
+done, and result exceptionally; no
+failed startup may leave a pending control future behind.
 
 Ordinary cancellation is observed at compiler-injected scheduler safepoints. A separate per-message watchdog enforces the configured hard turn deadline for all actor domains and can activate bounded compensation when a carrier remains stuck. Untrusted actors additionally have the independent lifetime watchdog and per-turn fuel budget. Every runtime-owned carrier clears watchdog interrupts before reuse. Security does not depend on the guest voluntarily yielding: untrusted statement/expression dispatch, loop backedges, and callable/recursion execution consume runtime fuel and recheck the deadline.
 

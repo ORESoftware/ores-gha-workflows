@@ -65,13 +65,10 @@ A shared actor may declare:
 
 - private state;
 - private helper methods;
-- zero or one public instance ingress named `receive_message`.
+- exactly one public instance ingress named `receive_message`.
 
-Zero public ingress is valid for a passive/base declaration that only contributes
-state or private behavior. Any public instance surface, when present, is singular
-and must be `receive_message`. All external interaction goes through the actor
-reference/mailbox. Public static helpers and additional public methods are
-rejected.
+All external interaction goes through the actor reference/mailbox. Public static
+helpers and additional public methods are rejected.
 
 This preserves semantic isolation even though the backing address space is
 shared: mutable actor-owned state is reachable only while that actor holds its
@@ -79,10 +76,9 @@ execution lease. Cross-actor shared mutation must use explicit synchronized
 capabilities such as runtime-managed shared cells/mutexes; ordinary actor state
 does not become concurrently callable shared-object state.
 
-The public ingress is deliberately singular so typed message patterns can lower
-to one Erlang-style receive loop instead of many concurrently callable methods.
-A zero-ingress declaration exposes no object-style escape hatch; a derived
-concrete actor may provide the one effective ingress.
+The public ingress is deliberately singular so future typed message patterns can
+lower to one Erlang-style receive loop instead of many concurrently callable
+methods.
 
 ## Private / isoactors
 

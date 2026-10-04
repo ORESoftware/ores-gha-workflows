@@ -82,16 +82,16 @@ final class ActorCallableKeywordTest {
                   stdio.stdout.write(await add.result);
                   stdio.stdout.write(":");
 
-                  val shared_task = spawn shared_emit("shared");
-                  await shared_task.done;
+                  val shared = spawn shared_emit("shared");
+                  await shared.done;
                   stdio.stdout.write(":");
 
                   val doubled = spawn double_it(21);
                   stdio.stdout.write(await doubled.result);
                   stdio.stdout.write(":");
 
-                  val private_task = spawn private_emit("private");
-                  await private_task.done;
+                  val private_spawn = spawn private_emit("private");
+                  await private_spawn.done;
                   return;
                 }
                 """);
