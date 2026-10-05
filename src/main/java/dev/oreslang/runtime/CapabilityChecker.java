@@ -310,6 +310,19 @@ public final class CapabilityChecker {
                 }
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
+                if (path.equals("native_fs.open_read")
+                        || path.equals("native_fs.read")
+                        || path.equals("native_fs.read_some")
+                        || path.equals("native_fs.size")) {
+                    require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
+                }
+                if (path.equals("native_fs.open_write_truncate")
+                        || path.equals("native_fs.open_write_append")
+                        || path.equals("native_fs.write")
+                        || path.equals("native_fs.fsync")
+                        || path.equals("native_fs.remove_file")) {
+                    require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
+                }
                 if (path.startsWith("env.")) require(policy, IsolatePolicy.Capability.ENVIRONMENT, path);
                 if (path.startsWith("ffi.")) require(policy, IsolatePolicy.Capability.FFI, path);
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);

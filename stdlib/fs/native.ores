@@ -1,0 +1,99 @@
+// Privileged Oreslang filesystem primitives.
+//
+// native_fs performs only capability-gated OS I/O and byte marshaling.
+// File policy, buffering, retries, text codecs, and higher-level filesystem
+// APIs belong in Oreslang.
+//
+// NativeFileHandle is opaque and move-only. The raw process fd never becomes
+// an Oreslang value.
+define module native_fs_api
+  pub fnc open_read(string path) => NativeFileHandle {
+    return native_fs.open_read(path);
+  }
+
+  pub fnc open_write_truncate(string path) => NativeFileHandle {
+    return native_fs.open_write_truncate(path);
+  }
+
+  pub fnc open_write_append(string path) => NativeFileHandle {
+    return native_fs.open_write_append(path);
+  }
+
+  pub fnc read(
+      &NativeFileHandle handle,
+      &mut Array<int> bytes,
+      int offset,
+      int length) => int {
+    return native_fs.read(handle, bytes, offset, length);
+  }
+
+  pub fnc read_some(
+      &NativeFileHandle handle,
+      int maximum) => Array<int> {
+    return native_fs.read_some(handle, maximum);
+  }
+
+  pub fnc write(
+      &NativeFileHandle handle,
+      &Array<int> bytes,
+      int offset,
+      int length) => int {
+    return native_fs.write(handle, bytes, offset, length);
+  }
+
+  fnc write_all_from(
+      &NativeFileHandle handle,
+      &Array<int> bytes,
+      int offset,
+      int length) => int {
+    if offset >= length; do
+      return offset;
+    fi
+
+    val written = native_fs.write(
+        handle,
+        bytes,
+        offset,
+        length - offset);
+
+    if written <= 0; do
+      return -1;
+    fi
+
+    return write_all_from(
+        handle,
+        bytes,
+        offset + written,
+        length);
+  }
+
+  pub fnc write_all(
+      &NativeFileHandle handle,
+      &Array<int> bytes,
+      int length) => int {
+    return write_all_from(handle, bytes, 0, length);
+  }
+
+  pub fnc size(&NativeFileHandle handle) => int {
+    return native_fs.size(handle);
+  }
+
+  pub fnc fsync(&NativeFileHandle handle) => void {
+    native_fs.fsync(handle);
+    return;
+  }
+
+  pub fnc is_open(&NativeFileHandle handle) => bool {
+    return native_fs.is_open(handle);
+  }
+
+  pub fnc close(NativeFileHandle handle) => void {
+    native_fs.close(handle);
+    return;
+  }
+
+  pub fnc remove_file(string path) => void {
+    native_fs.remove_file(path);
+    return;
+  }
+end

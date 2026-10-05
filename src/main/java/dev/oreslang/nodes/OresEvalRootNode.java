@@ -10,6 +10,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.net.NativeNetBuiltin;
+import dev.oreslang.fs.NativeFsBuiltin;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.BuiltinCallable;
@@ -354,6 +355,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("native_net")) return new NativeNetBuiltin(context);
+                if (name.name().equals("native_fs")) return new NativeFsBuiltin(context);
                 if (name.name().equals("net")) return OresNet.netPackage(context);
                 if (name.name().equals("http")) return OresNet.httpPackage(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);

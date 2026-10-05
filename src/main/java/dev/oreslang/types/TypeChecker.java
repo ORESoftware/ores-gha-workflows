@@ -484,7 +484,7 @@ public final class TypeChecker {
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
                     || name.name().equals("net") || name.name().equals("http")
-                    || name.name().equals("native_net")) {
+                    || name.name().equals("native_net") || name.name().equals("native_fs")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
@@ -765,6 +765,9 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("native_net")) {
                 return nativeNetMember(member.member());
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("native_fs")) {
+                return nativeFsMember(member.member());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = deref(receiver);
@@ -1084,6 +1087,32 @@ public final class TypeChecker {
         };
     }
 
+    private Type nativeFsMember(String name) {
+        Type handle = new Named("NativeFileHandle", List.of());
+        Type borrowedHandle = new Borrow(handle, false);
+        Type bytes = new ListType(Primitive.INT);
+        return switch (name) {
+            case "open_read", "open_write_truncate", "open_write_append" ->
+                    new Function(List.of(Primitive.STRING), handle);
+            case "read" -> new Function(
+                    List.of(borrowedHandle, new Borrow(bytes, true), Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "read_some" -> new Function(
+                    List.of(borrowedHandle, Primitive.INT),
+                    bytes);
+            case "write" -> new Function(
+                    List.of(borrowedHandle, new Borrow(bytes, false), Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "size" -> new Function(List.of(borrowedHandle), Primitive.INT);
+            case "fsync" -> new Function(List.of(borrowedHandle), Primitive.VOID);
+            case "is_open" -> new Function(List.of(borrowedHandle), Primitive.BOOL);
+            case "close" -> new Function(List.of(handle), Primitive.VOID);
+            case "remove_file" -> new Function(List.of(Primitive.STRING), Primitive.VOID);
+            default -> throw new IllegalArgumentException(
+                    "unknown native_fs primitive '" + name + "'");
+        };
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
         if (receiver instanceof Record record) {
@@ -1145,9 +1174,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("NativeSocketHandle")) {
+        if (named.name().equals("NativeSocketHandle") || named.name().equals("NativeFileHandle")) {
             throw new IllegalArgumentException(
-                    where + " cannot transport NativeSocketHandle across an actor boundary; transfer transport ownership through the runtime");
+                    where + " cannot transport " + named.name()
+                            + " across an actor boundary; transfer resource ownership through the runtime");
         }
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
             throw new IllegalArgumentException(
@@ -1218,7 +1248,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("NativeSocketHandle")) return false;
+        if (named.name().equals("NativeSocketHandle") || named.name().equals("NativeFileHandle")) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
