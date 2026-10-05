@@ -230,11 +230,11 @@ define module http_wire
     return;
   }
 
-  fnc decode_chunked_from(
+  fnc decode_chunked_into(
       &Array<int> source,
       string text,
       int offset,
-      Array<int> output) => Array<int> {
+      &mut Array<int> output) => void {
     val int line_end = text.index_of("\r\n", offset);
     if line_end < 0; do
       fail("malformed chunked response");
@@ -254,7 +254,7 @@ define module http_wire
     val int data_start = line_end + 2;
     if size == 0; do
       validate_chunk_trailers(text, data_start);
-      return output;
+      return;
     fi
 
     val int data_end = data_start + size;
@@ -270,13 +270,15 @@ define module http_wire
       output.push(source[i]);
     }
 
-    return decode_chunked_from(source, text, data_end + 2, output);
+    decode_chunked_into(source, text, data_end + 2, output);
+    return;
   }
 
   fnc decode_chunked(&Array<int> source) => Array<int> {
     val string text = source.to_latin1_string();
-    val Array<int> output = arr[];
-    return decode_chunked_from(source, text, 0, output);
+    let Array<int> output = arr[];
+    decode_chunked_into(source, text, 0, &mut output);
+    return output;
   }
 
   pub fnc parse_response(
