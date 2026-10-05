@@ -58,6 +58,13 @@ define module http_wire
     return status == 307 || status == 308;
   }
 
+  pub fnc sensitive_redirect_header(
+      string canonical_lower_name) => bool {
+    return canonical_lower_name == "authorization"
+        || canonical_lower_name == "proxy-authorization"
+        || canonical_lower_name == "cookie";
+  }
+
   pub fnc redirect_policy_allows(
       string policy,
       bool secure_downgrade) => bool {

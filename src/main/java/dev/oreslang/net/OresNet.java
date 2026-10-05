@@ -63,6 +63,18 @@ public final class OresNet {
                 "http_wire." + function + " did not return string");
     }
 
+    private static int httpWireInt(
+            OresContext context,
+            String function,
+            Object... callArguments) {
+        Object result = httpWire(context, function, callArguments);
+        if (result instanceof Number value) {
+            return Math.toIntExact(value.longValue());
+        }
+        throw new IllegalStateException(
+                "http_wire." + function + " did not return int");
+    }
+
     private static Object uriWire(
             OresContext context,
             String function,
@@ -1128,8 +1140,6 @@ public final class OresNet {
 
     private static final class HttpClientValue extends NetworkValue {
         private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
-        private static final int MAX_HEADER_BYTES = 64 * 1024;
-        private static final int MAX_REDIRECTS = 8;
         private static final int MAX_ADVERSARIAL_IO_TIMEOUT_MILLIS = 5_000;
         private final HttpVersion version;
         private final Redirect redirects;
@@ -1189,7 +1199,7 @@ public final class OresNet {
                 HttpResponseValue previous,
                 int redirectCount) {
             HttpResponseValue response = sendOnce(request, handler, previous);
-            if (redirectCount >= MAX_REDIRECTS
+            if (redirectCount >= httpWireInt(context, "max_redirects")
                     || !httpWireBool(context, "is_redirect", (long) response.statusCode)) {
                 return response;
             }
@@ -1239,10 +1249,10 @@ public final class OresNet {
                     (long) redirectUri.port)) {
                 LinkedHashMap<String, List<String>> sanitized = new LinkedHashMap<>();
                 request.headers.forEach((name, values) -> {
-                    String lower = name.toLowerCase(Locale.ROOT);
-                    if (!lower.equals("authorization")
-                            && !lower.equals("proxy-authorization")
-                            && !lower.equals("cookie")) {
+                    if (!httpWireBool(
+                            context,
+                            "sensitive_redirect_header",
+                            name)) {
                         sanitized.put(name, values);
                     }
                 });
