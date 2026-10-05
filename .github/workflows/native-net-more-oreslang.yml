@@ -44,19 +44,33 @@ jobs:
           grep -q 'private static native long listen' src/main/java/dev/oreslang/net/NativeSocketBridge.java
           grep -q 'private static native long accept' src/main/java/dev/oreslang/net/NativeSocketBridge.java
 
-      - name: Verify HTTP policy is authored in Oreslang
+      - name: Verify protocol ownership moved into Oreslang
         run: |
+          grep -q 'serialize_request' stdlib/net/http.ores
+          grep -q 'resolve_redirect' stdlib/net/http.ores
           grep -q 'redirect_rewrites_to_get' stdlib/net/http.ores
           grep -q 'response_may_have_body' stdlib/net/http.ores
           grep -q 'restricted_request_header' stdlib/net/http.ores
           ! grep -q 'java.net' stdlib/net/http.ores
 
+          ! grep -q 'encodeRequest(HttpRequestValue' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'resolveRedirect(String base' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'boolean isRedirect(' src/main/java/dev/oreslang/net/OresNet.java
+          grep -q 'invokeStdlib' src/main/java/dev/oreslang/net/OresNet.java
+
       - name: Compile exact mirrored source
-        run: mvn -B -ntp -DskipTests package
+        run: |
+          mvn -B -ntp -DskipTests package
+          test -f target/classes/stdlib/net/http.ores
+          test -f target/classes/stdlib/net/native.ores
 
       - name: Run opaque-boundary and native primitive tests
         run: |
           mvn -B -ntp             -Dtest=dev.oreslang.net.NativeNetOreslangBoundaryTest,dev.oreslang.net.NativeSocketHandleTest,dev.oreslang.net.NativeSocketBridgeTest             test
+
+      - name: Exercise Java compatibility facade through Oreslang wire stdlib
+        run: |
+          mvn -B -ntp             -Dtest='dev.oreslang.net.NativeNetworkingLanguageTest#oresHttpPostSendsBodyAndDecodesChunkedResponse+oresHttpClientFollowsRedirectsWithJavaShapedPolicy+patchRequestCarriesContentLength'             test
 
       - name: Build runtime classpath
         run: mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
