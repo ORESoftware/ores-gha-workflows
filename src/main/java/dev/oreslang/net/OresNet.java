@@ -1284,7 +1284,10 @@ public final class OresNet {
                 byte[] wireRequest = serializeRequest(context, request, uri);
                 writeAll(handle, wireRequest);
                 byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
-                ParsedResponse parsed = parseResponse(wireResponse, request.method);
+                ParsedResponse parsed = parseResponseWithStdlib(
+                        context,
+                        wireResponse,
+                        request.method);
 
                 Object body = switch (handler.kind()) {
                     case STRING -> new String(parsed.body, StandardCharsets.UTF_8);
@@ -1599,172 +1602,63 @@ public final class OresNet {
         }
     }
 
+    private static ParsedResponse parseResponseWithStdlib(
+            OresContext context,
+            byte[] wire,
+            String requestMethod) {
+        Object result = httpWire(
+                context,
+                "parse_response",
+                bytesToList(wire),
+                requestMethod);
+        if (!(result instanceof Map<?, ?> parsed)) {
+            throw new IllegalStateException(
+                    "http_wire.parse_response did not return a structural response");
+        }
+
+        Object statusValue = parsed.get("status_code");
+        if (!(statusValue instanceof Number statusNumber)) {
+            throw new IllegalStateException(
+                    "http_wire.parse_response returned invalid status_code");
+        }
+        int statusCode = Math.toIntExact(statusNumber.longValue());
+
+        Object namesValue = parsed.get("header_names");
+        Object valuesValue = parsed.get("header_values");
+        if (!(namesValue instanceof List<?> names)
+                || !(valuesValue instanceof List<?> values)
+                || names.size() != values.size()) {
+            throw new IllegalStateException(
+                    "http_wire.parse_response returned invalid header arrays");
+        }
+
+        LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
+        for (int i = 0; i < names.size(); i++) {
+            if (!(names.get(i) instanceof String name)
+                    || !(values.get(i) instanceof String value)) {
+                throw new IllegalStateException(
+                        "http_wire.parse_response returned non-string header data");
+            }
+            headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
+        }
+
+        LinkedHashMap<String, List<String>> frozen = new LinkedHashMap<>();
+        headers.forEach((key, valuesForKey) ->
+                frozen.put(key, List.copyOf(valuesForKey)));
+
+        byte[] body = bytesArg(
+                parsed.get("body"),
+                "http_wire.parse_response.body");
+        return new ParsedResponse(
+                statusCode,
+                Collections.unmodifiableMap(frozen),
+                body);
+    }
+
     private record ParsedResponse(
             int statusCode,
             Map<String, List<String>> headers,
             byte[] body) { }
-
-    private static ParsedResponse parseResponse(byte[] wire, String requestMethod) {
-        int headerEnd = indexOf(wire, new byte[] {'\r','\n','\r','\n'}, 0);
-        if (headerEnd < 0) throw new IllegalStateException("malformed HTTP response: missing header terminator");
-        if (headerEnd > HttpClientValue.MAX_HEADER_BYTES) {
-            throw new IllegalStateException(
-                    "HTTP response headers exceed " + HttpClientValue.MAX_HEADER_BYTES + " bytes");
-        }
-
-        String head = new String(wire, 0, headerEnd, StandardCharsets.ISO_8859_1);
-        String[] lines = head.split("\\r\\n");
-        if (lines.length == 0) throw new IllegalStateException("malformed HTTP response");
-        String[] status = lines[0].split(" ", 3);
-        if (status.length < 2 || !status[0].startsWith("HTTP/")) {
-            throw new IllegalStateException("malformed HTTP status line: " + lines[0]);
-        }
-        if (status[1].length() != 3
-                || status[1].chars().anyMatch(ch -> ch < '0' || ch > '9')) {
-            throw new IllegalStateException("malformed HTTP status code: " + status[1]);
-        }
-        int statusCode = Integer.parseInt(status[1]);
-        if (statusCode < 100 || statusCode > 599) {
-            throw new IllegalStateException("HTTP status code out of range: " + statusCode);
-        }
-        if (statusCode < 200) {
-            throw new UnsupportedOperationException(
-                    "informational HTTP responses require incremental response parsing");
-        }
-
-        LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
-        for (int i = 1; i < lines.length; i++) {
-            int colon = lines[i].indexOf(':');
-            if (colon <= 0) throw new IllegalStateException("malformed HTTP header: " + lines[i]);
-            String name = canonicalHeaderName(lines[i].substring(0, colon).trim());
-            String value = lines[i].substring(colon + 1).trim();
-            headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
-        }
-
-        byte[] body = Arrays.copyOfRange(wire, headerEnd + 4, wire.length);
-        List<String> transferEncodings = headers.getOrDefault("transfer-encoding", List.of());
-        if (transferEncodings.size() > 1) {
-            throw new IllegalStateException("multiple Transfer-Encoding response headers are unsupported");
-        }
-        String transferEncoding = transferEncodings.isEmpty() ? null : transferEncodings.getFirst();
-        List<String> contentLengths = headers.getOrDefault("content-length", List.of());
-        if (transferEncoding != null && !contentLengths.isEmpty()) {
-            throw new IllegalStateException("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
-        }
-        if (contentLengths.size() > 1) {
-            String expected = contentLengths.getFirst().trim();
-            for (String value : contentLengths) {
-                if (!expected.equals(value.trim())) {
-                    throw new IllegalStateException("conflicting Content-Length response headers");
-                }
-            }
-        }
-        boolean responseMayHaveBody = !requestMethod.equals("HEAD")
-                && statusCode != 204
-                && statusCode != 304;
-        if (!responseMayHaveBody) {
-            body = new byte[0];
-        } else if (transferEncoding != null) {
-            String normalized = transferEncoding.trim().toLowerCase(Locale.ROOT);
-            if (!normalized.equals("chunked")) {
-                throw new IllegalStateException("unsupported HTTP Transfer-Encoding: " + transferEncoding);
-            }
-            body = decodeChunked(body);
-        } else if (!contentLengths.isEmpty()) {
-            long parsedLength;
-            try {
-                parsedLength = Long.parseLong(contentLengths.getFirst().trim());
-            } catch (NumberFormatException error) {
-                throw new IllegalStateException("invalid Content-Length response header", error);
-            }
-            if (parsedLength < 0 || parsedLength > Integer.MAX_VALUE) {
-                throw new IllegalStateException("invalid Content-Length response header");
-            }
-            int length = (int) parsedLength;
-            if (length < body.length) body = Arrays.copyOf(body, length);
-            if (length > body.length) {
-                throw new IllegalStateException("truncated HTTP response body");
-            }
-        }
-
-        LinkedHashMap<String, List<String>> frozen = new LinkedHashMap<>();
-        headers.forEach((key, values) -> frozen.put(key, List.copyOf(values)));
-        return new ParsedResponse(statusCode, Collections.unmodifiableMap(frozen), body);
-    }
-
-    private static byte[] decodeChunked(byte[] body) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        int offset = 0;
-        while (true) {
-            int lineEnd = indexOf(body, new byte[] {'\r','\n'}, offset);
-            if (lineEnd < 0) throw new IllegalStateException("malformed chunked response");
-            String sizeLine = new String(body, offset, lineEnd - offset, StandardCharsets.US_ASCII);
-            int semicolon = sizeLine.indexOf(';');
-            if (semicolon >= 0) sizeLine = sizeLine.substring(0, semicolon);
-            final int size;
-            try {
-                String normalizedSize = sizeLine.trim();
-                if (normalizedSize.isEmpty()) {
-                    throw new NumberFormatException("empty chunk size");
-                }
-                size = Integer.parseInt(normalizedSize, 16);
-            } catch (NumberFormatException error) {
-                throw new IllegalStateException("invalid chunk size", error);
-            }
-            offset = lineEnd + 2;
-            if (size == 0) {
-                while (true) {
-                    int trailerLineEnd = indexOf(body, new byte[] {'\r','\n'}, offset);
-                    if (trailerLineEnd < 0) {
-                        throw new IllegalStateException("truncated chunk trailer section");
-                    }
-                    if (trailerLineEnd == offset) {
-                        offset += 2;
-                        if (offset != body.length) {
-                            throw new IllegalStateException("unexpected bytes after chunked response");
-                        }
-                        break;
-                    }
-                    String trailer = new String(
-                            body, offset, trailerLineEnd - offset, StandardCharsets.ISO_8859_1);
-                    int colon = trailer.indexOf(':');
-                    if (colon <= 0) {
-                        throw new IllegalStateException("malformed chunk trailer");
-                    }
-                    offset = trailerLineEnd + 2;
-                }
-                break;
-            }
-            if (offset + size + 2 > body.length) throw new IllegalStateException("truncated chunked response");
-            out.write(body, offset, size);
-            offset += size;
-            if (body[offset] != '\r' || body[offset + 1] != '\n') {
-                throw new IllegalStateException("malformed chunk terminator");
-            }
-            offset += 2;
-        }
-        return out.toByteArray();
-    }
-
-    private static int indexOf(byte[] source, byte[] needle, int start) {
-        outer:
-        for (int i = Math.max(0, start); i <= source.length - needle.length; i++) {
-            for (int j = 0; j < needle.length; j++) {
-                if (source[i + j] != needle[j]) continue outer;
-            }
-            return i;
-        }
-        return -1;
-    }
-
-    private static String firstHeader(Map<String, List<String>> headers, String name) {
-        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
-            if (entry.getKey().equalsIgnoreCase(name) && !entry.getValue().isEmpty()) {
-                return entry.getValue().getFirst();
-            }
-        }
-        return null;
-    }
 
     private static void validateHeader(String name, String value) {
         if (name == null || name.isBlank()) throw new IllegalArgumentException("HTTP header name cannot be blank");

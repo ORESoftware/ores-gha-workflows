@@ -139,6 +139,270 @@ define module http_wire
         && left_port == right_port;
   }
 
+  fnc parse_decimal_from(
+      string value,
+      int index,
+      int parsed) => int {
+    if index >= value.length; do
+      return parsed;
+    fi
+
+    val code = value.char_code_at(index);
+    if code < 48 || code > 57; do
+      return -1;
+    fi
+
+    val digit = code - 48;
+    if parsed > 214748364
+        || (parsed == 214748364 && digit > 7); do
+      return -1;
+    fi
+    return parse_decimal_from(value, index + 1, parsed * 10 + digit);
+  }
+
+  fnc parse_decimal(string raw) => int {
+    val value = raw.trim_ascii();
+    if value.length == 0; do
+      return -1;
+    fi
+    return parse_decimal_from(value, 0, 0);
+  }
+
+  fnc parse_hex_from(
+      string value,
+      int index,
+      int parsed) => int {
+    if index >= value.length; do
+      return parsed;
+    fi
+
+    val code = value.char_code_at(index);
+    let digit = -1;
+    if code >= 48 && code <= 57; do
+      digit = code - 48;
+    elseif code >= 65 && code <= 70; do
+      digit = code - 65 + 10;
+    elseif code >= 97 && code <= 102; do
+      digit = code - 97 + 10;
+    fi
+
+    if digit < 0; do
+      return -1;
+    fi
+    if parsed > 134217727
+        || (parsed == 134217727 && digit > 15); do
+      return -1;
+    fi
+    return parse_hex_from(value, index + 1, parsed * 16 + digit);
+  }
+
+  fnc parse_hex(string raw) => int {
+    val value = raw.trim_ascii();
+    if value.length == 0; do
+      return -1;
+    fi
+    return parse_hex_from(value, 0, 0);
+  }
+
+  fnc validate_chunk_trailers(
+      string text,
+      int offset) => void {
+    val line_end = text.index_of("\r\n", offset);
+    if line_end < 0; do
+      fail("truncated chunk trailer section");
+      return;
+    fi
+
+    if line_end == offset; do
+      if line_end + 2 != text.length; do
+        fail("unexpected bytes after chunked response");
+      fi
+      return;
+    fi
+
+    val trailer = text.slice(offset, line_end);
+    if trailer.index_of(":", 0) <= 0; do
+      fail("malformed chunk trailer");
+      return;
+    fi
+
+    validate_chunk_trailers(text, line_end + 2);
+    return;
+  }
+
+  fnc decode_chunked_from(
+      &Array<int> source,
+      string text,
+      int offset,
+      Array<int> output) => Array<int> {
+    val line_end = text.index_of("\r\n", offset);
+    if line_end < 0; do
+      fail("malformed chunked response");
+    fi
+
+    let size_text = text.slice(offset, line_end);
+    val semicolon = size_text.index_of(";", 0);
+    if semicolon >= 0; do
+      size_text = size_text.slice(0, semicolon);
+    fi
+
+    val size = parse_hex(size_text);
+    if size < 0; do
+      fail("invalid chunk size");
+    fi
+
+    val data_start = line_end + 2;
+    if size == 0; do
+      validate_chunk_trailers(text, data_start);
+      return output;
+    fi
+
+    val data_end = data_start + size;
+    if data_end + 2 > source.length; do
+      fail("truncated chunked response");
+    fi
+
+    if source[data_end] != 13 || source[data_end + 1] != 10; do
+      fail("malformed chunk terminator");
+    fi
+
+    for (let i = data_start; i < data_end; i = i + 1) {
+      output.push(source[i]);
+    }
+
+    return decode_chunked_from(source, text, data_end + 2, output);
+  }
+
+  fnc decode_chunked(&Array<int> source) => Array<int> {
+    val text = source.to_latin1_string();
+    val Array<int> output = arr[];
+    return decode_chunked_from(source, text, 0, output);
+  }
+
+  pub fnc parse_response(
+      Array<int> wire,
+      string request_method) => {
+        status_code: int,
+        header_names: Array<string>,
+        header_values: Array<string>,
+        body: Array<int>
+      } {
+    val text = wire.to_latin1_string();
+    val header_end = text.index_of("\r\n\r\n", 0);
+    if header_end < 0; do
+      fail("malformed HTTP response: missing header terminator");
+    fi
+    if header_end > max_header_bytes(); do
+      fail("HTTP response headers exceed configured limit");
+    fi
+
+    val head = text.slice(0, header_end);
+    val lines = head.split("\r\n");
+    if lines.length == 0; do
+      fail("malformed HTTP response");
+    fi
+
+    val status_line = lines[0];
+    if !status_line.starts_with("HTTP/"); do
+      fail("malformed HTTP status line");
+    fi
+
+    val first_space = status_line.index_of(" ", 0);
+    if first_space < 0; do
+      fail("malformed HTTP status line");
+    fi
+    val second_space = status_line.index_of(" ", first_space + 1);
+    let status_end = status_line.length;
+    if second_space >= 0; do
+      status_end = second_space;
+    fi
+
+    val status_text = status_line.slice(first_space + 1, status_end);
+    if status_text.length != 3; do
+      fail("malformed HTTP status code");
+    fi
+    val status_code = parse_decimal(status_text);
+    if status_code < 100 || status_code > 599; do
+      fail("HTTP status code out of range");
+    fi
+    if status_code < 200; do
+      fail("informational HTTP responses require incremental response parsing");
+    fi
+
+    val Array<string> header_names = arr[];
+    val Array<string> header_values = arr[];
+    let transfer_encoding = "";
+    let content_length_count = 0;
+    let content_length = "";
+
+    for (let i = 1; i < lines.length; i = i + 1) {
+      val line = lines[i];
+      val colon = line.index_of(":", 0);
+      if colon <= 0; do
+        fail("malformed HTTP header");
+      fi
+
+      val name = line.slice(0, colon).trim_ascii().lower_ascii();
+      val value = line.slice(colon + 1, line.length).trim_ascii();
+      if name.length == 0; do
+        fail("malformed HTTP header");
+      fi
+
+      header_names.push(name);
+      header_values.push(value);
+
+      if name == "transfer-encoding"; do
+        if transfer_encoding != ""; do
+          fail("multiple Transfer-Encoding response headers are unsupported");
+        fi
+        transfer_encoding = value;
+      fi
+
+      if name == "content-length"; do
+        content_length_count = content_length_count + 1;
+        if content_length_count == 1; do
+          content_length = value.trim_ascii();
+        elseif content_length != value.trim_ascii(); do
+          fail("conflicting Content-Length response headers");
+        fi
+      fi
+    }
+
+    if framing_is_ambiguous(
+        transfer_encoding,
+        content_length_count); do
+      fail("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
+    fi
+
+    let Array<int> body = wire.slice(header_end + 4, wire.length);
+    if !response_may_have_body(request_method, status_code); do
+      body = wire.slice(0, 0);
+    elseif transfer_encoding != ""; do
+      val normalized = transfer_encoding.trim_ascii().lower_ascii();
+      if normalized != "chunked"; do
+        fail("unsupported HTTP Transfer-Encoding");
+      fi
+      body = decode_chunked(&body);
+    elseif content_length_count > 0; do
+      val expected = parse_decimal(content_length);
+      if expected < 0; do
+        fail("invalid Content-Length response header");
+      fi
+      if expected < body.length; do
+        body = body.slice(0, expected);
+      elseif expected > body.length; do
+        fail("truncated HTTP response body");
+      fi
+    fi
+
+    return obj{
+      status_code: status_code,
+      header_names: header_names,
+      header_values: header_values,
+      body: body
+    };
+  }
+
   pub fnc serialize_request(
       string method,
       string request_target,
