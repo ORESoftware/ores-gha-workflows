@@ -22,7 +22,7 @@ final class NativeFsLanguageTest {
         Path path = directory.resolve("roundtrip.bin");
         String escapedPath = path.toString()
                 .replace("\\", "\\\\")
-                .replace(""", "\\"");
+                .replace("\"", "\\\"");
 
         String stdlib = Files.readString(Path.of("stdlib/fs/native.ores"));
         String program = stdlib + """
