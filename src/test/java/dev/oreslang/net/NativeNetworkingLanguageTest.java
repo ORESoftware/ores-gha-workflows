@@ -342,6 +342,96 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void normalRedirectPolicyAllowsHttpCrossAuthorityWithoutLeakingCredentials() throws Exception {
+        NativeSocketHandle redirectListener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        NativeSocketHandle targetListener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int redirectPort = NativeSocketBridge.localPort(redirectListener);
+        int targetPort = NativeSocketBridge.localPort(targetListener);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread redirectServer = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(redirectListener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("GET /start HTTP/1.1"));
+                assertTrue(headers.toLowerCase().contains("authorization: bearer secret"));
+                String response = "HTTP/1.1 302 Found\r\n"
+                        + "Location: http://127.0.0.1:" + targetPort + "/final\r\n"
+                        + "Content-Length: 0\r\n"
+                        + "Connection: close\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable error) {
+                failure.compareAndSet(null, error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-normal-redirect-source");
+        redirectServer.start();
+
+        Thread targetServer = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(targetListener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("GET /final HTTP/1.1"));
+                assertFalse(headers.toLowerCase().contains("authorization:"));
+                byte[] body = "normal-redirect-ok".getBytes(StandardCharsets.UTF_8);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Content-Length: " + body.length + "\r\n"
+                        + "Connection: close\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+                writeAll(client, body);
+            } catch (Throwable error) {
+                failure.compareAndSet(null, error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-normal-redirect-target");
+        targetServer.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val client = net.http.HttpClient.newBuilder()
+                        .followRedirects(net.http.HttpClient.Redirect.NORMAL)
+                        .build();
+                    val request = net.http.HttpRequest
+                        .newBuilder("http://127.0.0.1:%d/start")
+                        .header("Authorization", "Bearer secret")
+                        .GET()
+                        .build();
+                    val response = client.send(
+                        request,
+                        net.http.HttpResponse.BodyHandlers.ofString());
+                    stdio.println(response.statusCode());
+                    stdio.println(response.body());
+                    return;
+                  }
+                end
+                """.formatted(redirectPort);
+
+        String output = evaluate(program);
+        assertTrue(output.contains("200"));
+        assertTrue(output.contains("normal-redirect-ok"));
+
+        redirectServer.join(5_000);
+        targetServer.join(5_000);
+        NativeSocketBridge.close(redirectListener);
+        NativeSocketBridge.close(targetListener);
+        assertFalse(redirectServer.isAlive());
+        assertFalse(targetServer.isAlive());
+        if (failure.get() != null) fail("redirect servers failed", failure.get());
+    }
+
+
+    @Test
     void rejectsAmbiguousTransferEncodingAndContentLength() throws Exception {
         NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
