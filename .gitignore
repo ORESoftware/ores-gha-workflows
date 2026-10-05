@@ -1,4 +1,8 @@
-node_modules/
-.ores/
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.log
 tmp/
 temp/

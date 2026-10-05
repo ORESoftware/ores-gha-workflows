@@ -1,0 +1,28 @@
+// One-request HTTP/1.1 server using Oreslang control flow over native sockets.
+//
+// This source is stitched after stdlib/net/native.ores by the validation job.
+// There is no java.net / JDK HttpServer here. Java is only the hosted Truffle
+// marshaling/JNI boundary; socket syscalls are performed by liboresnet.
+pub routine main() => void {
+  val listener = native_net_api.listen("127.0.0.1", 18080, 16, true);
+  val client = native_net_api.accept(&listener);
+
+  // Consume one request packet so ordinary HTTP clients can complete the
+  // request/response exchange. HTTP parsing policy belongs in net/http .ores.
+  val request_bytes = native_net_api.read_some(&client, 8192);
+
+  val response = arr[
+    72, 84, 84, 80, 47, 49, 46, 49, 32, 50, 48, 48, 32, 79, 75, 13, 10,
+    67, 111, 110, 116, 101, 110, 116, 45, 84, 121, 112, 101, 58, 32, 116,
+    101, 120, 116, 47, 112, 108, 97, 105, 110, 59, 32, 99, 104, 97, 114,
+    115, 101, 116, 61, 117, 116, 102, 45, 56, 13, 10, 67, 111, 110, 116,
+    101, 110, 116, 45, 76, 101, 110, 103, 116, 104, 58, 32, 50, 13, 10,
+    67, 111, 110, 110, 101, 99, 116, 105, 111, 110, 58, 32, 99, 108, 111,
+    115, 101, 13, 10, 13, 10, 79, 75
+  ];
+
+  val written = native_net_api.write_all(&client, &response, 100);
+  native_net_api.close(client);
+  native_net_api.close(listener);
+  return;
+}
