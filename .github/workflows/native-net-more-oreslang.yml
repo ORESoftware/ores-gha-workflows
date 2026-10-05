@@ -56,6 +56,11 @@ jobs:
           ! grep -q 'encodeRequest(HttpRequestValue' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'resolveRedirect(String base' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'boolean isRedirect(' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'parseResponse(byte\[\] wire' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'decodeChunked(byte\[\] body' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'private static int indexOf(byte\[\]' src/main/java/dev/oreslang/net/OresNet.java
+          grep -q 'parse_response' stdlib/net/http.ores
+          grep -q 'decode_chunked' stdlib/net/http.ores
           grep -q 'invokeStdlib' src/main/java/dev/oreslang/net/OresNet.java
 
       - name: Compile exact mirrored source
