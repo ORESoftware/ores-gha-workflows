@@ -1609,13 +1609,6 @@ public final class OresNet {
                     "uri_wire.parse_absolute returned invalid " + field);
         }
 
-        String requestTarget() {
-            return requestTarget;
-        }
-
-        String hostHeader() {
-            return hostHeader;
-        }
     }
 
     private static ParsedResponse parseResponseWithStdlib(
