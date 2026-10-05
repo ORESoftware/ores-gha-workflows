@@ -1,73 +1,30 @@
-# ores-gha-workflows
+# Oreslang
 
-Reusable GitHub Actions workflows and deterministic support tools shared by the ORE repository fleet.
+Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
-## `container-images.yml` (`workflow_call`)
+This repository contains the Java/Truffle reference implementation.
 
-The reusable workflow validates `Dockerfile` plus its architecture-derived files, builds enabled architectures independently, transfers immutable digests through Actions artifacts, and optionally publishes a multi-architecture manifest.
+The language is intentionally opinionated:
 
-Publication is **off by default**. The caller template has two separate jobs:
+- static nominal typing by default, with explicit structural compatibility at selected call boundaries;
+- private functions by default (`fnc`), with `pub` for exported functions;
+- class methods omit `fnc` and have an implicit `self` receiver;
+- one return value only (tuples/arrays/records are ordinary single values);
+- `val`, `const`, and `let` are the only variable declarations;
+- actor heaps are isolated: mutable values are never shared between actors;
+- immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
+- isolates are stricter security boundaries for FaaS/mobile workloads, with host access denied and Oreslang APIs capability-gated by default;
+- JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
+- file-granular incremental compilation with stable code-unit/package identities and reverse-dependency invalidation;
+- flat optional file namespaces and flat modules (neither may nest);
+- class-level `static fnc` functions separated from receiver methods;
+- first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
+- lexical closures with persistent captured environments;
+- affine ownership, move checking, `&T` / `&mut T` borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax;
+- hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
+- direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
+- multiple named modules may appear in one source file;
+- explicit `return` statements;
+- generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
 
-- pull requests receive read-only repository permission, no provider credentials, and `push: false`;
-- protected-branch pushes and explicit manual dispatches receive the narrowly required package/OIDC permissions and `push: true`.
-
-Every external Action and reusable-workflow reference is a full immutable commit SHA. Policy tools are downloaded from an exact repository revision and verified by SHA-256 before execution. Workflow-call inputs are passed through environment values rather than interpolated into shell source.
-
-### Registries
-
-| Registry | Name | Activation |
-|---|---|---|
-| `ghcr.io/<org>/<repo>` | fleet default | every authorized publication |
-| `<region>-docker.pkg.dev/<gcp-project>/<org>/<repo>` | GCP Artifact Registry | only when `gcp-project` is explicitly configured |
-| `docker.io/<namespace>/<org>-<repo>` | private Docker Hub namespace | only when `dockerhub-namespace` is explicitly configured |
-
-GHCR uses the workflow token. Docker Hub requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. GCP uses Workload Identity Federation through `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT`; JSON service-account keys do not belong in GitHub.
-
-Copy `templates/images.yml` into a repository only after replacing all five placeholders:
-
-- `__DEFAULT_BRANCH__`
-- `__ORG__`
-- `__IMAGE__`
-- `__GCP_PROJECT__` (empty string is an explicit temporary skip)
-- `__DOCKERHUB_NS__` (empty string is an explicit skip)
-
-Do not replace the reusable-workflow SHA with `main`, a version tag, or another mutable ref.
-
-## Source and derivation policy
-
-`Dockerfile` remains the authored source. `scripts/render-dkf.mjs` derives `Dockerfile.arm64.dkf` and `Dockerfile.x86-64.dkf`; stage aliases and `$BUILDPLATFORM` builders remain architecture-neutral. A source digest in each header makes drift detectable.
-
-`scripts/validate-container-source.mjs` rejects:
-
-- external images without an explicit tag or immutable digest;
-- the mutable `latest` tag;
-- Node container majors below 22;
-- Dockerfiles with no external base image.
-
-These checks intentionally stop legacy images such as `node:10` before they are copied into ARM64/AMD64 variants and published under new tags. Modernize the source Dockerfile first; never treat architecture derivation as an excuse to preserve an unsupported runtime.
-
-## Validation
-
-Run:
-
-```sh
-npm test
-```
-
-The suite covers deterministic Dockerfile derivation, source-image policy, immutable Action references, pull-request permission separation, digest handoff, exact policy-tool downloads, and shell-injection boundaries. Repository CI also runs `actionlint` from a digest-pinned container.
-
-
-## `actions/workflow-security`
-
-The public composite action validates `.github/workflows` and `.github/actions` with a dependency-free Rust checker. Remote GitHub actions and reusable workflows must use a full 40-character commit SHA; `docker://` actions must use an explicit `sha256` digest. Local `./` actions remain valid.
-
-Callers should check out their exact candidate without persisted credentials and pin this action to an immutable reviewed commit:
-
-```yaml
-- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-  with:
-    persist-credentials: false
-- uses: ORESoftware/ores-gha-workflows/actions/workflow-security@<immutable-commit-sha>
-```
-
-The action compiles and runs its Rust unit tests before scanning the caller, writes only under `RUNNER_TEMP`, and requires no repository-write permission or private cross-organization credential.
+The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
