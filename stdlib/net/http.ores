@@ -331,9 +331,9 @@ define module http_wire
 
     val Array<string> header_names = arr[];
     val Array<string> header_values = arr[];
-    let transfer_encoding = "";
+    let string transfer_encoding = "";
     let content_length_count = 0;
-    let content_length = "";
+    let string content_length = "";
 
     for (let i = 1; i < lines.length; i = i + 1) {
       val line = lines[i];
