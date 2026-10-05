@@ -18,12 +18,22 @@ final class NativeNetOreslangBoundaryTest {
     }
 
     @Test
+    void uriStdlibActuallyParsesAndTypeChecks() throws Exception {
+        String source = Files.readString(Path.of("stdlib/net/uri.ores"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(source.contains("parse_absolute"));
+        assertTrue(source.contains("host_header"));
+        assertTrue(source.contains("request_target"));
+    }
+
+    @Test
     void httpPolicyStdlibActuallyParsesAndTypeChecks() throws Exception {
         String source = Files.readString(Path.of("stdlib/net/http.ores"));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
         assertTrue(source.contains("redirect_rewrites_to_get"));
         assertTrue(source.contains("response_may_have_body"));
         assertTrue(source.contains("restricted_request_header"));
+        assertTrue(source.contains("canonical_request_header"));
     }
 
     @Test

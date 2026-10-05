@@ -558,7 +558,13 @@ final class NativeNetworkingLanguageTest {
         assertFalse(source.contains("encodeRequest(HttpRequestValue"),
                 "HTTP request serialization must move to native liboresnet");
         assertFalse(source.contains("resolveRedirect(String base"),
-                "redirect URI resolution must move to native liboresnet");
+                "redirect URI resolution must move to Oreslang stdlib");
+        assertFalse(source.contains("static ParsedUri parse(String raw)"),
+                "URI parsing must move to Oreslang stdlib");
+        assertFalse(source.contains("validateHeader(String name"),
+                "request-header validation must move to Oreslang stdlib");
+        assertFalse(source.contains("canonicalHeaderName(String name"),
+                "request-header canonicalization must move to Oreslang stdlib");
     }
 
 
@@ -582,11 +588,16 @@ final class NativeNetworkingLanguageTest {
                 java.nio.file.Path.of("stdlib/net/native.ores"));
         String http = java.nio.file.Files.readString(
                 java.nio.file.Path.of("stdlib/net/http.ores"));
+        String uri = java.nio.file.Files.readString(
+                java.nio.file.Path.of("stdlib/net/uri.ores"));
         assertTrue(nativeApi.contains("native_net."));
         assertFalse(nativeApi.contains("java:"));
         assertFalse(http.contains("java:"));
         assertFalse(http.contains("java.net"));
         assertFalse(http.contains("java.net.http"));
+        assertTrue(uri.contains("parse_absolute"));
+        assertFalse(uri.contains("java:"));
+        assertFalse(uri.contains("java.net"));
     }
 
     private static String evaluateWithoutNetwork(String program) throws Exception {

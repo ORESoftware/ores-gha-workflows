@@ -1,0 +1,192 @@
+// URI parsing and rendering belong in Oreslang, not Java.
+//
+// This module is pure protocol/data logic. It owns the absolute-URI shape used
+// by the native HTTP compatibility API while transport remains in liboresnet.
+define module uri_wire
+  fnc fail(string message) => void {
+    None.expect(message);
+    return;
+  }
+
+  fnc parse_decimal_from(
+      string value,
+      int index,
+      int parsed) => int {
+    if index >= value.length; do
+      return parsed;
+    fi
+
+    val int code = value.char_code_at(index);
+    if code < 48 || code > 57; do
+      return -1;
+    fi
+
+    val int digit = code - 48;
+    if parsed > 6553
+        || (parsed == 6553 && digit > 5); do
+      return -1;
+    fi
+    return parse_decimal_from(
+        value,
+        index + 1,
+        parsed * 10 + digit);
+  }
+
+  fnc parse_port(string raw) => int {
+    if raw.length == 0; do
+      fail("URI port cannot be empty");
+    fi
+    val int port = parse_decimal_from(raw, 0, 0);
+    if port < 0 || port > 65535; do
+      fail("URI port must be between 0 and 65535");
+    fi
+    return port;
+  }
+
+  pub fnc parse_absolute(string raw) => {
+      raw: string,
+      scheme: string,
+      host: string,
+      explicit_port: int,
+      port: int,
+      path: string,
+      query: string,
+      has_query: bool,
+      request_target: string,
+      host_header: string
+    } {
+    if raw.trim_ascii().length == 0; do
+      fail("URI cannot be blank");
+    fi
+
+    val int scheme_at = raw.index_of("://", 0);
+    if scheme_at <= 0; do
+      fail("absolute URI required");
+    fi
+
+    val string scheme = raw.slice(0, scheme_at).lower_ascii();
+    val int authority_start = scheme_at + 3;
+    val int path_start = raw.index_of("/", authority_start);
+    val int query_only = raw.index_of("?", authority_start);
+
+    let int authority_end = raw.length;
+    if path_start < 0; do
+      if query_only >= 0; do
+        authority_end = query_only;
+      fi
+    elseif query_only >= 0 && query_only < path_start; do
+      authority_end = query_only;
+    else
+      authority_end = path_start;
+    fi
+
+    val string authority = raw.slice(
+        authority_start,
+        authority_end);
+    if authority.trim_ascii().length == 0; do
+      fail("URI host is required");
+    fi
+
+    let string host = "";
+    let int explicit_port = -1;
+
+    if authority.starts_with("["); do
+      val int closing = authority.index_of("]", 0);
+      if closing < 0; do
+        fail("invalid IPv6 URI authority");
+      fi
+
+      host = authority.slice(1, closing);
+      if closing + 1 < authority.length; do
+        if authority.char_code_at(closing + 1) != 58; do
+          fail("invalid URI authority");
+        fi
+        explicit_port = parse_port(
+            authority.slice(
+                closing + 2,
+                authority.length));
+      fi
+    else
+      val int colon = authority.last_index_of(":");
+      if colon > 0
+          && authority.index_of(":", 0) == colon; do
+        host = authority.slice(0, colon);
+        explicit_port = parse_port(
+            authority.slice(
+                colon + 1,
+                authority.length));
+      else
+        host = authority;
+      fi
+    fi
+
+    if host.trim_ascii().length == 0; do
+      fail("URI host is required");
+    fi
+
+    let int port = -1;
+    if explicit_port >= 0; do
+      port = explicit_port;
+    elseif scheme == "http"; do
+      port = 80;
+    elseif scheme == "https"; do
+      port = 443;
+    fi
+
+    let string path_and_query = "";
+    if authority_end < raw.length; do
+      path_and_query = raw.slice(
+          authority_end,
+          raw.length);
+    fi
+
+    let string path = path_and_query;
+    let string query = "";
+    let bool has_query = false;
+    val int query_at = path_and_query.index_of("?", 0);
+    if query_at >= 0; do
+      path = path_and_query.slice(0, query_at);
+      query = path_and_query.slice(
+          query_at + 1,
+          path_and_query.length);
+      has_query = true;
+    fi
+
+    if path.length == 0; do
+      path = "/";
+    fi
+
+    let string request_target = path;
+    if has_query; do
+      request_target = path + "?" + query;
+    fi
+
+    let string rendered_host = host;
+    if host.contains(":"); do
+      rendered_host = "[" + host + "]";
+    fi
+
+    val bool default_port =
+        (scheme == "http" && port == 80)
+        || (scheme == "https" && port == 443);
+
+    let string host_header = rendered_host;
+    if port >= 0 && !default_port; do
+      host_header =
+          rendered_host + ":" + port.to_string();
+    fi
+
+    return obj{
+      raw: raw,
+      scheme: scheme,
+      host: host,
+      explicit_port: explicit_port,
+      port: port,
+      path: path,
+      query: query,
+      has_query: has_query,
+      request_target: request_target,
+      host_header: host_header
+    };
+  }
+end

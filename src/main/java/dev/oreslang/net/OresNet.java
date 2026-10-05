@@ -28,6 +28,7 @@ import java.util.Objects;
  */
 public final class OresNet {
     private static final String HTTP_WIRE_STDLIB = "/stdlib/net/http.ores";
+    private static final String URI_WIRE_STDLIB = "/stdlib/net/uri.ores";
 
     private OresNet() { }
 
@@ -60,6 +61,17 @@ public final class OresNet {
         if (result instanceof String value) return value;
         throw new IllegalStateException(
                 "http_wire." + function + " did not return string");
+    }
+
+    private static Object uriWire(
+            OresContext context,
+            String function,
+            Object... callArguments) {
+        return context.invokeStdlib(
+                URI_WIRE_STDLIB,
+                "uri_wire",
+                function,
+                callArguments);
     }
 
     public static BuiltinValue netPackage(OresContext context) {
@@ -206,7 +218,7 @@ public final class OresNet {
             if (!name.equals("create")) throw unknown("net.URI", name);
             return (BuiltinCallable) args -> {
                 requireArity(args, 1, "net.URI.create");
-                return new UriValue(context, ParsedUri.parse(stringArg(args, 0, "net.URI.create")));
+                return new UriValue(context, ParsedUri.parse(context, stringArg(args, 0, "net.URI.create")));
             };
         }
     }
@@ -1023,7 +1035,7 @@ public final class OresNet {
                 case "build" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "HttpRequest.Builder.build");
                     if (uri == null || uri.isBlank()) throw new IllegalStateException("HttpRequest requires a URI");
-                    ParsedUri.parse(uri);
+                    ParsedUri.parse(context, uri);
                     return snapshot();
                 };
                 case "copy" -> (BuiltinCallable) args -> {
@@ -1052,8 +1064,11 @@ public final class OresNet {
         }
 
         private void addHeader(String name, String value, boolean replace) {
-            validateHeader(name, value);
-            String key = canonicalHeaderName(name);
+            String key = httpWireString(
+                    context,
+                    "canonical_request_header",
+                    name,
+                    value);
             if (replace) headers.put(key, new ArrayList<>(List.of(value)));
             else headers.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
         }
@@ -1098,7 +1113,7 @@ public final class OresNet {
         @Override
         public Object member(String name) {
             return switch (name) {
-                case "uri" -> noArg("HttpRequest.uri", new UriValue(context, ParsedUri.parse(uri)));
+                case "uri" -> noArg("HttpRequest.uri", new UriValue(context, ParsedUri.parse(context, uri)));
                 case "method" -> noArg("HttpRequest.method", method);
                 case "headers" -> noArg("HttpRequest.headers", new HttpHeadersValue(context, headers));
                 case "expectContinue" -> noArg("HttpRequest.expectContinue", expectContinue);
@@ -1182,7 +1197,7 @@ public final class OresNet {
             String location = response.headers.firstRaw("location");
             if (location == null) return response;
 
-            ParsedUri currentUri = ParsedUri.parse(request.uri);
+            ParsedUri currentUri = ParsedUri.parse(context, request.uri);
             String nextUri = httpWireString(
                     context,
                     "resolve_redirect",
@@ -1190,7 +1205,7 @@ public final class OresNet {
                     currentUri.hostHeader(),
                     currentUri.path,
                     location);
-            ParsedUri redirectUri = ParsedUri.parse(nextUri);
+            ParsedUri redirectUri = ParsedUri.parse(context, nextUri);
             boolean secureDowngrade = currentUri.scheme.equals("https")
                     && !redirectUri.scheme.equals("https");
             if (!httpWireBool(
@@ -1243,7 +1258,7 @@ public final class OresNet {
                 HttpRequestValue request,
                 BodyHandlerValue handler,
                 HttpResponseValue previous) {
-            ParsedUri uri = ParsedUri.parse(request.uri);
+            ParsedUri uri = ParsedUri.parse(context, request.uri);
             if (!uri.scheme.equals("http")) {
                 if (uri.scheme.equals("https")) {
                     throw new UnsupportedOperationException(
@@ -1400,7 +1415,7 @@ public final class OresNet {
                         previous == null
                                 ? new OptionalValue(OresNull.INSTANCE, false)
                                 : new OptionalValue(previous, true));
-                case "uri" -> noArg("HttpResponse.uri", new UriValue(context, ParsedUri.parse(uri)));
+                case "uri" -> noArg("HttpResponse.uri", new UriValue(context, ParsedUri.parse(context, uri)));
                 case "version" -> noArg("HttpResponse.version", version.name());
                 case "sslSession" -> noArg("HttpResponse.sslSession", new OptionalValue(OresNull.INSTANCE, false));
                 default -> throw unknown("HttpResponse", name);
@@ -1516,7 +1531,9 @@ public final class OresNet {
                 case "getHost" -> noArg("URI.getHost", uri.host);
                 case "getPort" -> noArg("URI.getPort", (long) uri.explicitPort);
                 case "getPath" -> noArg("URI.getPath", uri.path);
-                case "getQuery" -> noArg("URI.getQuery", uri.query == null ? OresNull.INSTANCE : uri.query);
+                case "getQuery" -> noArg(
+                        "URI.getQuery",
+                        uri.hasQuery ? uri.query : OresNull.INSTANCE);
                 case "toString" -> noArg("URI.toString", uri.raw);
                 default -> throw unknown("URI", name);
             };
@@ -1533,72 +1550,71 @@ public final class OresNet {
             int explicitPort,
             int port,
             String path,
-            String query) {
+            String query,
+            boolean hasQuery,
+            String requestTarget,
+            String hostHeader) {
 
-        static ParsedUri parse(String raw) {
-            if (raw == null || raw.isBlank()) throw new IllegalArgumentException("URI cannot be blank");
-            int schemeAt = raw.indexOf("://");
-            if (schemeAt <= 0) throw new IllegalArgumentException("absolute URI required: " + raw);
-            String scheme = raw.substring(0, schemeAt).toLowerCase(Locale.ROOT);
-            int authorityStart = schemeAt + 3;
-            int pathStart = raw.indexOf('/', authorityStart);
-            int queryOnly = raw.indexOf('?', authorityStart);
-            int authorityEnd;
-            if (pathStart < 0) authorityEnd = queryOnly < 0 ? raw.length() : queryOnly;
-            else if (queryOnly >= 0 && queryOnly < pathStart) authorityEnd = queryOnly;
-            else authorityEnd = pathStart;
-
-            String authority = raw.substring(authorityStart, authorityEnd);
-            if (authority.isBlank()) throw new IllegalArgumentException("URI host is required: " + raw);
-
-            String host;
-            int explicitPort = -1;
-            if (authority.startsWith("[")) {
-                int closing = authority.indexOf(']');
-                if (closing < 0) throw new IllegalArgumentException("invalid IPv6 URI authority: " + raw);
-                host = authority.substring(1, closing);
-                if (closing + 1 < authority.length()) {
-                    if (authority.charAt(closing + 1) != ':') throw new IllegalArgumentException("invalid URI authority: " + raw);
-                    explicitPort = Integer.parseInt(authority.substring(closing + 2));
-                }
-            } else {
-                int colon = authority.lastIndexOf(':');
-                if (colon > 0 && authority.indexOf(':') == colon) {
-                    host = authority.substring(0, colon);
-                    explicitPort = Integer.parseInt(authority.substring(colon + 1));
-                } else {
-                    host = authority;
-                }
+        static ParsedUri parse(
+                OresContext context,
+                String raw) {
+            Object result = uriWire(
+                    context,
+                    "parse_absolute",
+                    raw);
+            if (!(result instanceof Map<?, ?> parsed)) {
+                throw new IllegalStateException(
+                        "uri_wire.parse_absolute did not return a structural URI");
             }
-            if (host.isBlank()) throw new IllegalArgumentException("URI host is required: " + raw);
-            if (explicitPort != -1) checkPort(explicitPort, "URI");
 
-            int defaultPort = scheme.equals("https") ? 443 : 80;
-            int port = explicitPort == -1 ? defaultPort : explicitPort;
+            return new ParsedUri(
+                    mapString(parsed, "raw"),
+                    mapString(parsed, "scheme"),
+                    mapString(parsed, "host"),
+                    mapInt(parsed, "explicit_port"),
+                    mapInt(parsed, "port"),
+                    mapString(parsed, "path"),
+                    mapString(parsed, "query"),
+                    mapBool(parsed, "has_query"),
+                    mapString(parsed, "request_target"),
+                    mapString(parsed, "host_header"));
+        }
 
-            String pathAndQuery = authorityEnd >= raw.length() ? "" : raw.substring(authorityEnd);
-            String path;
-            String query = null;
-            int queryAt = pathAndQuery.indexOf('?');
-            if (queryAt >= 0) {
-                path = pathAndQuery.substring(0, queryAt);
-                query = pathAndQuery.substring(queryAt + 1);
-            } else {
-                path = pathAndQuery;
+        private static String mapString(
+                Map<?, ?> parsed,
+                String field) {
+            Object value = parsed.get(field);
+            if (value instanceof String string) return string;
+            throw new IllegalStateException(
+                    "uri_wire.parse_absolute returned invalid " + field);
+        }
+
+        private static int mapInt(
+                Map<?, ?> parsed,
+                String field) {
+            Object value = parsed.get(field);
+            if (value instanceof Number number) {
+                return Math.toIntExact(number.longValue());
             }
-            if (path.isEmpty()) path = "/";
-            return new ParsedUri(raw, scheme, host, explicitPort, port, path, query);
+            throw new IllegalStateException(
+                    "uri_wire.parse_absolute returned invalid " + field);
+        }
+
+        private static boolean mapBool(
+                Map<?, ?> parsed,
+                String field) {
+            Object value = parsed.get(field);
+            if (value instanceof Boolean bool) return bool;
+            throw new IllegalStateException(
+                    "uri_wire.parse_absolute returned invalid " + field);
         }
 
         String requestTarget() {
-            return query == null ? path : path + "?" + query;
+            return requestTarget;
         }
 
         String hostHeader() {
-            boolean ipv6 = host.indexOf(':') >= 0;
-            String rendered = ipv6 ? "[" + host + "]" : host;
-            boolean defaultPort = (scheme.equals("http") && port == 80) || (scheme.equals("https") && port == 443);
-            return defaultPort ? rendered : rendered + ":" + port;
+            return hostHeader;
         }
     }
 
@@ -1659,23 +1675,6 @@ public final class OresNet {
             int statusCode,
             Map<String, List<String>> headers,
             byte[] body) { }
-
-    private static void validateHeader(String name, String value) {
-        if (name == null || name.isBlank()) throw new IllegalArgumentException("HTTP header name cannot be blank");
-        if (value == null) throw new IllegalArgumentException("HTTP header value cannot be null");
-        if (name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
-            throw new IllegalArgumentException("HTTP headers cannot contain CR/LF");
-        }
-        String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.equals("connection") || lower.equals("content-length") || lower.equals("expect")
-                || lower.equals("host") || lower.equals("upgrade")) {
-            throw new IllegalArgumentException("restricted HTTP request header: " + name);
-        }
-    }
-
-    private static String canonicalHeaderName(String name) {
-        return name.toLowerCase(Locale.ROOT);
-    }
 
     private static HttpVersion parseVersion(Object value) {
         String raw = String.valueOf(value).toUpperCase(Locale.ROOT).replace('.', '_');

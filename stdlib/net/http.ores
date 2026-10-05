@@ -84,6 +84,79 @@ define module http_wire
         || canonical_lower_name == "upgrade";
   }
 
+  fnc header_name_char_valid(int code) => bool {
+    return (code >= 48 && code <= 57)
+        || (code >= 65 && code <= 90)
+        || (code >= 97 && code <= 122)
+        || code == 33
+        || code == 35
+        || code == 36
+        || code == 37
+        || code == 38
+        || code == 39
+        || code == 42
+        || code == 43
+        || code == 45
+        || code == 46
+        || code == 94
+        || code == 95
+        || code == 96
+        || code == 124
+        || code == 126;
+  }
+
+  fnc header_name_valid_from(
+      string name,
+      int index) => bool {
+    if index >= name.length; do
+      return true;
+    fi
+    if !header_name_char_valid(
+        name.char_code_at(index)); do
+      return false;
+    fi
+    return header_name_valid_from(
+        name,
+        index + 1);
+  }
+
+  fnc header_value_valid_from(
+      string value,
+      int index) => bool {
+    if index >= value.length; do
+      return true;
+    fi
+
+    val int code = value.char_code_at(index);
+    if code != 9
+        && (code < 32 || code == 127 || code > 255); do
+      return false;
+    fi
+    return header_value_valid_from(
+        value,
+        index + 1);
+  }
+
+  pub fnc canonical_request_header(
+      string name,
+      string value) => string {
+    if name.length == 0; do
+      fail("HTTP header name cannot be blank");
+    fi
+    if !header_name_valid_from(name, 0); do
+      fail("invalid HTTP request header name");
+    fi
+    if !header_value_valid_from(value, 0); do
+      fail("invalid HTTP request header value");
+    fi
+
+    val string canonical = name.lower_ascii();
+    if restricted_request_header(canonical); do
+      fail("restricted HTTP request header");
+    fi
+    return canonical;
+  }
+
   pub fnc request_needs_content_length(
       string method,
       int body_length) => bool {
