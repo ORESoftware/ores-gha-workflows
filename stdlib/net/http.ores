@@ -147,12 +147,12 @@ define module http_wire
       return parsed;
     fi
 
-    val code = value.char_code_at(index);
+    val int code = value.char_code_at(index);
     if code < 48 || code > 57; do
       return -1;
     fi
 
-    val digit = code - 48;
+    val int digit = code - 48;
     if parsed > 214748364
         || (parsed == 214748364 && digit > 7); do
       return -1;
@@ -176,7 +176,7 @@ define module http_wire
       return parsed;
     fi
 
-    val code = value.char_code_at(index);
+    val int code = value.char_code_at(index);
     let digit = -1;
     if code >= 48 && code <= 57; do
       digit = code - 48;
@@ -207,7 +207,7 @@ define module http_wire
   fnc validate_chunk_trailers(
       string text,
       int offset) => void {
-    val line_end = text.index_of("\r\n", offset);
+    val int line_end = text.index_of("\r\n", offset);
     if line_end < 0; do
       fail("truncated chunk trailer section");
       return;
@@ -220,7 +220,7 @@ define module http_wire
       return;
     fi
 
-    val trailer = text.slice(offset, line_end);
+    val string trailer = text.slice(offset, line_end);
     if trailer.index_of(":", 0) <= 0; do
       fail("malformed chunk trailer");
       return;
@@ -235,29 +235,29 @@ define module http_wire
       string text,
       int offset,
       Array<int> output) => Array<int> {
-    val line_end = text.index_of("\r\n", offset);
+    val int line_end = text.index_of("\r\n", offset);
     if line_end < 0; do
       fail("malformed chunked response");
     fi
 
-    let size_text = text.slice(offset, line_end);
-    val semicolon = size_text.index_of(";", 0);
+    let string size_text = text.slice(offset, line_end);
+    val int semicolon = size_text.index_of(";", 0);
     if semicolon >= 0; do
       size_text = size_text.slice(0, semicolon);
     fi
 
-    val size = parse_hex(size_text);
+    val int size = parse_hex(size_text);
     if size < 0; do
       fail("invalid chunk size");
     fi
 
-    val data_start = line_end + 2;
+    val int data_start = line_end + 2;
     if size == 0; do
       validate_chunk_trailers(text, data_start);
       return output;
     fi
 
-    val data_end = data_start + size;
+    val int data_end = data_start + size;
     if data_end + 2 > source.length; do
       fail("truncated chunked response");
     fi
@@ -274,7 +274,7 @@ define module http_wire
   }
 
   fnc decode_chunked(&Array<int> source) => Array<int> {
-    val text = source.to_latin1_string();
+    val string text = source.to_latin1_string();
     val Array<int> output = arr[];
     return decode_chunked_from(source, text, 0, output);
   }
@@ -287,8 +287,8 @@ define module http_wire
         header_values: Array<string>,
         body: Array<int>
       } {
-    val text = wire.to_latin1_string();
-    val header_end = text.index_of("\r\n\r\n", 0);
+    val string text = wire.to_latin1_string();
+    val int header_end = text.index_of("\r\n\r\n", 0);
     if header_end < 0; do
       fail("malformed HTTP response: missing header terminator");
     fi
@@ -296,32 +296,32 @@ define module http_wire
       fail("HTTP response headers exceed configured limit");
     fi
 
-    val head = text.slice(0, header_end);
-    val lines = head.split("\r\n");
+    val string head = text.slice(0, header_end);
+    val Array<string> lines = head.split("\r\n");
     if lines.length == 0; do
       fail("malformed HTTP response");
     fi
 
-    val status_line = lines[0];
+    val string status_line = lines[0];
     if !status_line.starts_with("HTTP/"); do
       fail("malformed HTTP status line");
     fi
 
-    val first_space = status_line.index_of(" ", 0);
+    val int first_space = status_line.index_of(" ", 0);
     if first_space < 0; do
       fail("malformed HTTP status line");
     fi
-    val second_space = status_line.index_of(" ", first_space + 1);
-    let status_end = status_line.length;
+    val int second_space = status_line.index_of(" ", first_space + 1);
+    let int status_end = status_line.length;
     if second_space >= 0; do
       status_end = second_space;
     fi
 
-    val status_text = status_line.slice(first_space + 1, status_end);
+    val string status_text = status_line.slice(first_space + 1, status_end);
     if status_text.length != 3; do
       fail("malformed HTTP status code");
     fi
-    val status_code = parse_decimal(status_text);
+    val int status_code = parse_decimal(status_text);
     if status_code < 100 || status_code > 599; do
       fail("HTTP status code out of range");
     fi
@@ -336,14 +336,14 @@ define module http_wire
     let string content_length = "";
 
     for (let i = 1; i < lines.length; i = i + 1) {
-      val line = lines[i];
-      val colon = line.index_of(":", 0);
+      val string line = lines[i];
+      val int colon = line.index_of(":", 0);
       if colon <= 0; do
         fail("malformed HTTP header");
       fi
 
-      val name = line.slice(0, colon).trim_ascii().lower_ascii();
-      val value = line.slice(colon + 1, line.length).trim_ascii();
+      val string name = line.slice(0, colon).trim_ascii().lower_ascii();
+      val string value = line.slice(colon + 1, line.length).trim_ascii();
       if name.length == 0; do
         fail("malformed HTTP header");
       fi
@@ -378,13 +378,13 @@ define module http_wire
     if !response_may_have_body(request_method, status_code); do
       body = wire.slice(0, 0);
     elseif transfer_encoding != ""; do
-      val normalized = transfer_encoding.trim_ascii().lower_ascii();
+      val string normalized = transfer_encoding.trim_ascii().lower_ascii();
       if normalized != "chunked"; do
         fail("unsupported HTTP Transfer-Encoding");
       fi
       body = decode_chunked(&body);
     elseif content_length_count > 0; do
-      val expected = parse_decimal(content_length);
+      val int expected = parse_decimal(content_length);
       if expected < 0; do
         fail("invalid Content-Length response header");
       fi
