@@ -51,7 +51,12 @@ jobs:
           grep -q 'redirect_rewrites_to_get' stdlib/net/http.ores
           grep -q 'response_may_have_body' stdlib/net/http.ores
           grep -q 'restricted_request_header' stdlib/net/http.ores
+          grep -q 'canonical_request_header' stdlib/net/http.ores
+          grep -q 'parse_absolute' stdlib/net/uri.ores
+          grep -q 'request_target' stdlib/net/uri.ores
+          grep -q 'host_header' stdlib/net/uri.ores
           ! grep -q 'java.net' stdlib/net/http.ores
+          ! grep -q 'java.net' stdlib/net/uri.ores
 
           ! grep -q 'encodeRequest(HttpRequestValue' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'resolveRedirect(String base' src/main/java/dev/oreslang/net/OresNet.java
@@ -59,6 +64,9 @@ jobs:
           ! grep -q 'parseResponse(byte\[\] wire' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'decodeChunked(byte\[\] body' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'private static int indexOf(byte\[\]' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'static ParsedUri parse(String raw)' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'validateHeader(String name' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'canonicalHeaderName(String name' src/main/java/dev/oreslang/net/OresNet.java
           grep -q 'parse_response' stdlib/net/http.ores
           grep -q 'decode_chunked' stdlib/net/http.ores
           grep -q 'invokeStdlib' src/main/java/dev/oreslang/net/OresNet.java
@@ -68,14 +76,17 @@ jobs:
           mvn -B -ntp -DskipTests package
           test -f target/classes/stdlib/net/http.ores
           test -f target/classes/stdlib/net/native.ores
+          test -f target/classes/stdlib/net/uri.ores
 
       - name: Run opaque-boundary and native primitive tests
         run: |
           mvn -B -ntp             -Dtest=dev.oreslang.net.NativeNetOreslangBoundaryTest,dev.oreslang.net.NativeSocketHandleTest,dev.oreslang.net.NativeSocketBridgeTest             test
 
-      - name: Exercise Java compatibility facade through Oreslang wire stdlib
+      - name: Exercise full Java compatibility facade through Oreslang stdlib
         run: |
-          mvn -B -ntp             -Dtest='dev.oreslang.net.NativeNetworkingLanguageTest#oresHttpPostSendsBodyAndDecodesChunkedResponse+oresHttpClientFollowsRedirectsWithJavaShapedPolicy+patchRequestCarriesContentLength'             test
+          mvn -B -ntp \
+            -Dtest=dev.oreslang.net.NativeNetworkingLanguageTest \
+            test
 
       - name: Build runtime classpath
         run: mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
