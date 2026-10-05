@@ -26,7 +26,7 @@ jobs:
           cache: maven
 
       - name: Verify exact source identity
-        run: test "$(cat .mirror-source-sha)" = "b4ecab6f0d3276c784acfb16c881beb2066ce364"
+        run: test "$(cat .mirror-source-sha)" = "1006b920a5449e037f65c14cfeaf5f6892743da3"
 
       - name: Reject Java guest transport and filesystem implementations
         shell: bash
@@ -118,7 +118,7 @@ jobs:
           wait "$server_pid"
           trap - EXIT
 
-  native-fs-aot:
+  native-os-aot:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -133,7 +133,7 @@ jobs:
           github-token: \${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
-      - name: Build AOT image with native filesystem bridge
+      - name: Build AOT image with native OS bridges
         run: mvn -B -ntp -Pnative-aot -DskipTests package
 
       - name: Exercise native filesystem from AOT Oreslang
@@ -176,3 +176,36 @@ jobs:
           grep -Fxq '79' target/native-fs-aot.out
           grep -Fxq '84' target/native-fs-aot.out
           test ! -e "$file"
+
+      - name: Exercise native sockets from AOT Oreslang
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat stdlib/net/native.ores examples/native-http-server.ores > target/native-http-aot.ores
+
+          ./target/ores-aot \
+            --mode=aot \
+            --platform=linux \
+            --allow=NETWORK \
+            target/native-http-aot.ores \
+            >target/native-http-aot.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if body="$(curl -fsS --max-time 1 http://127.0.0.1:18080/ 2>/dev/null)"; then
+              test "$body" = "OK"
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat target/native-http-aot.log >&2 || true
+            exit 1
+          fi
+
+          wait "$server_pid"
+          trap - EXIT
