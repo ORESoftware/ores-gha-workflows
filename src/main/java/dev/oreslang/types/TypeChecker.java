@@ -805,6 +805,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
             }
 
+            if ((receiver instanceof ListType || receiver instanceof Tuple)
+                    && member.member().equals("length")) {
+                return Primitive.INT;
+            }
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
                 if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");

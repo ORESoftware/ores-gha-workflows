@@ -615,6 +615,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object.owner, object, name);
             }
+            if (receiver instanceof List<?> list && name.equals("length")) {
+                return (long) list.size();
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
                 return map.get(name);
