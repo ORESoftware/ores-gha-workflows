@@ -1,0 +1,174 @@
+name: native-os-more-oreslang
+
+on:
+  push:
+    branches:
+      - "feat/oreslang-native-fs-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-os:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: \${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Verify exact source identity
+        run: test "$(cat .mirror-source-sha)" = "8686f03d589812a03b30cc793146a91a66724723"
+
+      - name: Reject Java guest transport and filesystem implementations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -R -n -E '^[[:space:]]*import[[:space:]]+java\.net\.(Socket|ServerSocket|http\.)' \
+              src/main/java/dev/oreslang/net; then
+            echo "guest networking must not delegate to Java socket/http transports" >&2
+            exit 1
+          fi
+
+          if grep -R -n -E 'java\.nio\.file\.Files|java\.io\.(FileInputStream|FileOutputStream|RandomAccessFile|FileDescriptor)' \
+              src/main/java/dev/oreslang/fs; then
+            echo "guest filesystem must not be implemented with Java file APIs" >&2
+            exit 1
+          fi
+
+          test "$(grep -R -l 'java\.nio\.file' src/main/java/dev/oreslang/runtime src/main/java/dev/oreslang/net src/main/java/dev/oreslang/fs | sort | tr '\n' ' ')" = \
+            "src/main/java/dev/oreslang/runtime/NativeLibraryLoader.java "
+
+      - name: Enforce opaque descriptor ABIs
+        run: |
+          ! grep -n -E '\bint[[:space:]]+(fd|handle)\b' stdlib/net/native.ores
+          ! grep -n -E '\bint[[:space:]]+(fd|handle)\b' stdlib/fs/native.ores
+          grep -q 'NativeSocketHandle' stdlib/net/native.ores
+          grep -q 'NativeFileHandle' stdlib/fs/native.ores
+          grep -q '&NativeSocketHandle' stdlib/net/native.ores
+          grep -q '&NativeFileHandle' stdlib/fs/native.ores
+
+      - name: Verify policy remains in Oreslang
+        run: |
+          grep -q 'write_all_from' stdlib/net/native.ores
+          grep -q 'write_all_from' stdlib/fs/native.ores
+          grep -q 'redirect_rewrites_to_get' stdlib/net/http.ores
+          grep -q 'response_may_have_body' stdlib/net/http.ores
+          grep -q 'restricted_request_header' stdlib/net/http.ores
+          ! grep -q 'java.net' stdlib/net/http.ores
+          ! grep -q 'java:' stdlib/fs/native.ores
+
+      - name: Compile exact mirrored source
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Run native network and filesystem boundary tests
+        run: |
+          mvn -B -ntp \
+            -Dtest=dev.oreslang.net.NativeNetOreslangBoundaryTest,dev.oreslang.net.NativeSocketHandleTest,dev.oreslang.net.NativeSocketBridgeTest,dev.oreslang.fs.NativeFsOreslangBoundaryTest,dev.oreslang.fs.NativeFileBridgeTest,dev.oreslang.fs.NativeFsLanguageTest \
+            test
+
+      - name: Build runtime classpath
+        run: mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+
+      - name: Run Oreslang-authored HTTP server over native sockets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat stdlib/net/native.ores examples/native-http-server.ores > target/native-http-server.ores
+
+          java \
+            -cp "target/classes:$(cat target/classpath.txt)" \
+            dev.oreslang.launcher.OresMain \
+            --platform=server \
+            --allow=NETWORK \
+            target/native-http-server.ores \
+            >target/native-http-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if body="$(curl -fsS --max-time 1 http://127.0.0.1:18080/ 2>/dev/null)"; then
+              test "$body" = "OK"
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat target/native-http-server.log >&2 || true
+            exit 1
+          fi
+
+          wait "$server_pid"
+          trap - EXIT
+
+  native-fs-aot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: \${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Build AOT image with native filesystem bridge
+        run: mvn -B -ntp -Pnative-aot -DskipTests package
+
+      - name: Exercise native filesystem from AOT Oreslang
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/oreslang-aot-native-fs.bin"
+          escaped="\${file//\\/\\\\}"
+          escaped="\${escaped//\"/\\\"}"
+
+          cat stdlib/fs/native.ores > target/native-fs-aot.ores
+          cat >> target/native-fs-aot.ores <<EOF
+          pub routine main() => void {
+            val out = native_fs_api.open_write_truncate("$escaped");
+            val bytes = arr[65, 79, 84];
+            val written = native_fs_api.write_all(&out, &bytes, 3);
+            stdio.println(written);
+            native_fs_api.fsync(&out);
+            native_fs_api.close(out);
+
+            val input = native_fs_api.open_read("$escaped");
+            val read = native_fs_api.read_some(&input, 8);
+            stdio.println(read.length);
+            stdio.println(read[0]);
+            stdio.println(read[1]);
+            stdio.println(read[2]);
+            native_fs_api.close(input);
+            native_fs_api.remove_file("$escaped");
+            return;
+          }
+          EOF
+
+          ./target/ores-aot \
+            --mode=aot \
+            --platform=linux \
+            --allow=STDOUT,FILESYSTEM_READ,FILESYSTEM_WRITE \
+            target/native-fs-aot.ores | tee target/native-fs-aot.out
+
+          grep -Fxq '3' target/native-fs-aot.out
+          grep -Fxq '65' target/native-fs-aot.out
+          grep -Fxq '79' target/native-fs-aot.out
+          grep -Fxq '84' target/native-fs-aot.out
+          test ! -e "$file"
