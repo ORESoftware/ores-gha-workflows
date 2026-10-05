@@ -1,8 +1,7 @@
 package dev.oreslang.net;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import dev.oreslang.runtime.NativeLibraryLoader;
 
 /**
  * JNI boundary for Oreslang networking.
@@ -19,27 +18,10 @@ final class NativeSocketBridge {
     private static final String LIBRARY = "oresnet";
 
     static {
-        loadNativeLibrary();
+        NativeLibraryLoader.load(LIBRARY, "ores.net.native.path");
     }
 
     private NativeSocketBridge() { }
-
-    private static void loadNativeLibrary() {
-        String explicit = System.getProperty("ores.net.native.path");
-        if (explicit != null && !explicit.isBlank()) {
-            System.load(Path.of(explicit).toAbsolutePath().normalize().toString());
-            return;
-        }
-
-        Path local = Path.of("target", "native", System.mapLibraryName(LIBRARY))
-                .toAbsolutePath().normalize();
-        if (Files.isRegularFile(local)) {
-            System.load(local.toString());
-            return;
-        }
-
-        System.loadLibrary(LIBRARY);
-    }
 
     private static native long connect(String host, int port, int timeoutMillis) throws IOException;
     private static native long listen(String host, int port, int backlog, boolean reuseAddress) throws IOException;
