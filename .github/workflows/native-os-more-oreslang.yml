@@ -26,7 +26,7 @@ jobs:
           cache: maven
 
       - name: Verify exact source identity
-        run: test "$(cat .mirror-source-sha)" = "8686f03d589812a03b30cc793146a91a66724723"
+        run: test "$(cat .mirror-source-sha)" = "11e8ec6a2972344d9a2995da419ad4d0515c7dbc"
 
       - name: Reject Java guest transport and filesystem implementations
         shell: bash
