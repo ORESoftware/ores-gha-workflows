@@ -1,14 +1,21 @@
 package dev.oreslang.runtime;
 
+import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.TruffleContext;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.nodes.OresEvalRootNode;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -30,6 +37,7 @@ public final class OresContext implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
+    private final Map<String, CallTarget> stdlibUnits = new HashMap<>();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -118,6 +126,50 @@ public final class OresContext implements AutoCloseable {
         return linkedCodeUnits.containsKey(codeUnitId);
     }
 
+    /**
+     * Executes a public function from a packaged Oreslang stdlib unit inside
+     * this exact Truffle context. Protocol behavior stays in .ores source;
+     * Java only loads the immutable resource and marshals call arguments.
+     */
+    public Object invokeStdlib(
+            String resourcePath,
+            String module,
+            String function,
+            Object... callArguments) {
+        CallTarget target;
+        synchronized (this) {
+            target = stdlibUnits.computeIfAbsent(
+                    resourcePath,
+                    this::loadStdlibUnit);
+        }
+
+        Object[] call = new Object[3 + callArguments.length];
+        call[0] = OresEvalRootNode.CALL_EXPORT_COMMAND;
+        call[1] = module;
+        call[2] = function;
+        System.arraycopy(callArguments, 0, call, 3, callArguments.length);
+        return target.call(call);
+    }
+
+    private CallTarget loadStdlibUnit(String resourcePath) {
+        if (resourcePath == null || resourcePath.isBlank() || resourcePath.charAt(0) != '/') {
+            throw new IllegalArgumentException("stdlib resource path must be absolute");
+        }
+
+        final String source;
+        try (InputStream input = OresContext.class.getResourceAsStream(resourcePath)) {
+            if (input == null) {
+                throw new IllegalStateException("missing packaged Oreslang stdlib resource " + resourcePath);
+            }
+            source = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException error) {
+            throw new IllegalStateException("cannot read Oreslang stdlib resource " + resourcePath, error);
+        }
+
+        Ast.Program program = OresCompiler.parseAndTypeCheck(source);
+        return new OresEvalRootNode(language, program, resourcePath).getCallTarget();
+    }
+
     private void executeActorTurn(Runnable turn) {
         boolean serialize = isolatePolicy.adversarial();
         if (serialize) adversarialActorTurnLock.lock();
@@ -152,6 +204,7 @@ public final class OresContext implements AutoCloseable {
         } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
+                stdlibUnits.clear();
             }
             garbageCollector.close();
             output.flush();

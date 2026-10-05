@@ -33,6 +33,7 @@ public final class OresEvalRootNode extends RootNode {
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
+    public static final String CALL_EXPORT_COMMAND = "__ores_internal_call_export__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -71,6 +72,17 @@ public final class OresEvalRootNode extends RootNode {
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
             return current.executeMain(new Object[0]);
+        }
+        if (arguments.length >= 3 && CALL_EXPORT_COMMAND.equals(arguments[0])) {
+            if (!(arguments[1] instanceof String module)
+                    || !(arguments[2] instanceof String function)) {
+                throw new IllegalArgumentException("invalid internal stdlib export invocation");
+            }
+            current.link();
+            current.initialize();
+            ArrayList<Object> values = new ArrayList<>(Math.max(0, arguments.length - 3));
+            for (int i = 3; i < arguments.length; i++) values.add(arguments[i]);
+            return current.invokeExport(module, function, values);
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
@@ -180,6 +192,18 @@ public final class OresEvalRootNode extends RootNode {
             if (main == null) main = findFunction("main");
             if (main == null) return null;
             return callFunction(main, List.of(arguments));
+        }
+
+        private Object invokeExport(
+                String module,
+                String function,
+                List<Object> callArguments) {
+            Ast.FunctionDecl target = functions.get(module + "." + function);
+            if (target == null || target.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "stdlib module '" + module + "' does not export function '" + function + "'");
+            }
+            return callFunction(target, callArguments);
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
@@ -598,6 +622,9 @@ public final class OresEvalRootNode extends RootNode {
                     default -> member(guard.value(), name);
                 };
             }
+            if (receiver instanceof String string) return stringMember(string, name);
+            if (receiver instanceof Number number) return numberMember(number, name);
+            if (receiver instanceof List<?> list) return listMember(list, name);
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
@@ -618,6 +645,157 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object stringMember(String value, String name) {
+            return switch (name) {
+                case "length" -> (long) value.length();
+                case "index_of" -> (Invokable) args -> {
+                    if (args.size() != 2 || !(args.getFirst() instanceof String needle)
+                            || !(args.get(1) instanceof Number start)) {
+                        throw new IllegalArgumentException("String.index_of expects (string, int)");
+                    }
+                    int from = Math.toIntExact(start.longValue());
+                    if (from < 0 || from > value.length()) {
+                        throw new IllegalArgumentException("String.index_of start is out of bounds");
+                    }
+                    return (long) value.indexOf(needle, from);
+                };
+                case "last_index_of" -> (Invokable) args -> {
+                    requireOne(args, "String.last_index_of");
+                    if (!(args.getFirst() instanceof String needle)) {
+                        throw new IllegalArgumentException("String.last_index_of expects string");
+                    }
+                    return (long) value.lastIndexOf(needle);
+                };
+                case "slice" -> (Invokable) args -> {
+                    if (args.size() != 2
+                            || !(args.getFirst() instanceof Number start)
+                            || !(args.get(1) instanceof Number end)) {
+                        throw new IllegalArgumentException("String.slice expects (int, int)");
+                    }
+                    int from = Math.toIntExact(start.longValue());
+                    int to = Math.toIntExact(end.longValue());
+                    if (from < 0 || to < from || to > value.length()) {
+                        throw new IllegalArgumentException("String.slice range is out of bounds");
+                    }
+                    return value.substring(from, to);
+                };
+                case "starts_with" -> (Invokable) args -> value.startsWith(
+                        requireStringArg(args, "String.starts_with"));
+                case "ends_with" -> (Invokable) args -> value.endsWith(
+                        requireStringArg(args, "String.ends_with"));
+                case "contains" -> (Invokable) args -> value.contains(
+                        requireStringArg(args, "String.contains"));
+                case "lower_ascii" -> (Invokable) args -> {
+                    requireZero(args, "String.lower_ascii");
+                    StringBuilder out = new StringBuilder(value.length());
+                    for (int i = 0; i < value.length(); i++) {
+                        char ch = value.charAt(i);
+                        out.append(ch >= 'A' && ch <= 'Z' ? (char) (ch + ('a' - 'A')) : ch);
+                    }
+                    return out.toString();
+                };
+                case "trim_ascii" -> (Invokable) args -> {
+                    requireZero(args, "String.trim_ascii");
+                    int start = 0;
+                    int end = value.length();
+                    while (start < end && value.charAt(start) <= 0x20) start++;
+                    while (end > start && value.charAt(end - 1) <= 0x20) end--;
+                    return value.substring(start, end);
+                };
+                case "split" -> (Invokable) args -> {
+                    String separator = requireStringArg(args, "String.split");
+                    if (separator.isEmpty()) throw new IllegalArgumentException("String.split separator cannot be empty");
+                    ArrayList<Object> result = new ArrayList<>();
+                    int at = 0;
+                    while (true) {
+                        int next = value.indexOf(separator, at);
+                        if (next < 0) {
+                            result.add(value.substring(at));
+                            break;
+                        }
+                        result.add(value.substring(at, next));
+                        at = next + separator.length();
+                    }
+                    return result;
+                };
+                case "char_code_at" -> (Invokable) args -> {
+                    requireOne(args, "String.char_code_at");
+                    if (!(args.getFirst() instanceof Number index)) {
+                        throw new IllegalArgumentException("String.char_code_at expects int");
+                    }
+                    int at = Math.toIntExact(index.longValue());
+                    if (at < 0 || at >= value.length()) {
+                        throw new IllegalArgumentException("String.char_code_at index is out of bounds");
+                    }
+                    return (long) value.charAt(at);
+                };
+                case "to_latin1_bytes" -> (Invokable) args -> {
+                    requireZero(args, "String.to_latin1_bytes");
+                    ArrayList<Object> result = new ArrayList<>(value.length());
+                    for (int i = 0; i < value.length(); i++) {
+                        int ch = value.charAt(i);
+                        if (ch > 255) {
+                            throw new IllegalArgumentException(
+                                    "String.to_latin1_bytes cannot encode character above U+00FF");
+                        }
+                        result.add((long) ch);
+                    }
+                    return result;
+                };
+                default -> throw new IllegalArgumentException("unknown String member " + name);
+            };
+        }
+
+        private Object numberMember(Number value, String name) {
+            return switch (name) {
+                case "to_string" -> (Invokable) args -> {
+                    requireZero(args, "number.to_string");
+                    return display(value);
+                };
+                default -> throw new IllegalArgumentException("unknown numeric member " + name);
+            };
+        }
+
+        @SuppressWarnings("unchecked")
+        private Object listMember(List<?> raw, String name) {
+            return switch (name) {
+                case "length" -> (long) raw.size();
+                case "push" -> (Invokable) args -> {
+                    requireOne(args, "Array.push");
+                    ((List<Object>) raw).add(args.getFirst());
+                    return null;
+                };
+                case "slice" -> (Invokable) args -> {
+                    if (args.size() != 2
+                            || !(args.getFirst() instanceof Number start)
+                            || !(args.get(1) instanceof Number end)) {
+                        throw new IllegalArgumentException("Array.slice expects (int, int)");
+                    }
+                    int from = Math.toIntExact(start.longValue());
+                    int to = Math.toIntExact(end.longValue());
+                    if (from < 0 || to < from || to > raw.size()) {
+                        throw new IllegalArgumentException("Array.slice range is out of bounds");
+                    }
+                    return new ArrayList<>(raw.subList(from, to));
+                };
+                case "to_latin1_string" -> (Invokable) args -> {
+                    requireZero(args, "Array.to_latin1_string");
+                    StringBuilder result = new StringBuilder(raw.size());
+                    for (Object item : raw) {
+                        if (!(item instanceof Number number)
+                                || number.longValue() < 0
+                                || number.longValue() > 255) {
+                            throw new IllegalArgumentException(
+                                    "Array.to_latin1_string requires byte values 0..255");
+                        }
+                        result.append((char) number.intValue());
+                    }
+                    return result.toString();
+                };
+                default -> throw new IllegalArgumentException("unknown Array member " + name);
+            };
         }
 
         private Object optionMember(OptionValue option, String name) {

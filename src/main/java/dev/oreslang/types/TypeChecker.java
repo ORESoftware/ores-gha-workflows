@@ -767,6 +767,8 @@ public final class TypeChecker {
                 return nativeNetMember(member.member());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type primitiveMember = builtinPrimitiveMember(deref(receiver), member.member());
+            if (primitiveMember != null) return primitiveMember;
             Type sumReceiver = deref(receiver);
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
@@ -1326,6 +1328,64 @@ public final class TypeChecker {
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    private Type builtinPrimitiveMember(Type receiver, String member) {
+        if (receiver == Primitive.STRING || receiver instanceof StringLiteral) {
+            return switch (member) {
+                case "length" -> Primitive.INT;
+                case "index_of" -> new Function(
+                        List.of(Primitive.STRING, Primitive.INT),
+                        Primitive.INT);
+                case "last_index_of" -> new Function(
+                        List.of(Primitive.STRING),
+                        Primitive.INT);
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT),
+                        Primitive.STRING);
+                case "starts_with", "ends_with", "contains" ->
+                        new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                case "lower_ascii", "trim_ascii" ->
+                        new Function(List.of(), Primitive.STRING);
+                case "split" -> new Function(
+                        List.of(Primitive.STRING),
+                        new ListType(Primitive.STRING));
+                case "char_code_at" -> new Function(
+                        List.of(Primitive.INT),
+                        Primitive.INT);
+                case "to_latin1_bytes" -> new Function(
+                        List.of(),
+                        new ListType(Primitive.INT));
+                default -> null;
+            };
+        }
+        if (receiver == Primitive.INT
+                || receiver == Primitive.FLOAT
+                || receiver == Primitive.DECIMAL) {
+            if (member.equals("to_string")) {
+                return new Function(List.of(), Primitive.STRING);
+            }
+        }
+        if (receiver instanceof ListType list) {
+            return switch (member) {
+                case "length" -> Primitive.INT;
+                case "push" -> new Function(
+                        List.of(list.element()),
+                        Primitive.VOID);
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT),
+                        new ListType(list.element()));
+                case "to_latin1_string" -> {
+                    requireAssignable(
+                            list.element(),
+                            Primitive.INT,
+                            "Array.to_latin1_string element");
+                    yield new Function(List.of(), Primitive.STRING);
+                }
                 default -> null;
             };
         }

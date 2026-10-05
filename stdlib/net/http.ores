@@ -100,4 +100,94 @@ define module http_wire
   pub fnc max_header_bytes() => int {
     return 65536;
   }
+
+  fnc fail(string message) => void {
+    None.expect(message);
+    return;
+  }
+
+  pub fnc resolve_redirect(
+      string base_scheme,
+      string base_host_header,
+      string base_path,
+      string location) => string {
+    if location.index_of("://", 0) >= 0; do
+      return location;
+    fi
+
+    val origin = base_scheme + "://" + base_host_header;
+    if location.starts_with("/"); do
+      return origin + location;
+    fi
+
+    val slash = base_path.last_index_of("/");
+    if slash < 0; do
+      return origin + "/" + location;
+    fi
+    return origin + base_path.slice(0, slash + 1) + location;
+  }
+
+  pub fnc same_authority(
+      string left_scheme,
+      string left_host,
+      int left_port,
+      string right_scheme,
+      string right_host,
+      int right_port) => bool {
+    return left_scheme == right_scheme
+        && left_host.lower_ascii() == right_host.lower_ascii()
+        && left_port == right_port;
+  }
+
+  pub fnc serialize_request(
+      string method,
+      string request_target,
+      string host_header,
+      Array<string> header_names,
+      Array<string> header_values,
+      Array<int> body,
+      bool expect_continue) => Array<int> {
+    if header_names.length != header_values.length; do
+      fail("HTTP header name/value arrays must have equal length");
+    fi
+
+    let head = method + " " + request_target + " HTTP/1.1\r\n";
+    head = head + "Host: " + host_header + "\r\n";
+    head = head + "Connection: close\r\n";
+
+    let has_content_type = false;
+    for (let i = 0; i < header_names.length; i = i + 1) {
+      val name = header_names[i];
+      val value = header_values[i];
+      val lower = name.lower_ascii();
+
+      if lower == "content-type"; do
+        has_content_type = true;
+      fi
+
+      if lower != "host"
+          && lower != "content-length"
+          && lower != "connection"; do
+        head = head + name + ": " + value + "\r\n";
+      fi
+    }
+
+    if request_needs_content_length(method, body.length); do
+      head = head + "Content-Length: " + body.length.to_string() + "\r\n";
+      if !has_content_type; do
+        head = head + "Content-Type: application/octet-stream\r\n";
+      fi
+    fi
+
+    if expect_continue; do
+      head = head + "Expect: 100-continue\r\n";
+    fi
+
+    head = head + "\r\n";
+    val wire = head.to_latin1_bytes();
+    for (val byte of body) {
+      wire.push(byte);
+    }
+    return wire;
+  }
 end

@@ -27,7 +27,40 @@ import java.util.Objects;
  * JNI rather than java.net.Socket/ServerSocket/HttpClient.
  */
 public final class OresNet {
+    private static final String HTTP_WIRE_STDLIB = "/stdlib/net/http.ores";
+
     private OresNet() { }
+
+    private static Object httpWire(
+            OresContext context,
+            String function,
+            Object... callArguments) {
+        return context.invokeStdlib(
+                HTTP_WIRE_STDLIB,
+                "http_wire",
+                function,
+                callArguments);
+    }
+
+    private static boolean httpWireBool(
+            OresContext context,
+            String function,
+            Object... callArguments) {
+        Object result = httpWire(context, function, callArguments);
+        if (result instanceof Boolean value) return value;
+        throw new IllegalStateException(
+                "http_wire." + function + " did not return bool");
+    }
+
+    private static String httpWireString(
+            OresContext context,
+            String function,
+            Object... callArguments) {
+        Object result = httpWire(context, function, callArguments);
+        if (result instanceof String value) return value;
+        throw new IllegalStateException(
+                "http_wire." + function + " did not return string");
+    }
 
     public static BuiltinValue netPackage(OresContext context) {
         return new NetPackage(context);
@@ -1141,30 +1174,54 @@ public final class OresNet {
                 HttpResponseValue previous,
                 int redirectCount) {
             HttpResponseValue response = sendOnce(request, handler, previous);
-            if (redirects == Redirect.NEVER || redirectCount >= MAX_REDIRECTS || !isRedirect(response.statusCode)) return response;
+            if (redirectCount >= MAX_REDIRECTS
+                    || !httpWireBool(context, "is_redirect", (long) response.statusCode)) {
+                return response;
+            }
 
             String location = response.headers.firstRaw("location");
             if (location == null) return response;
 
-            String nextUri = resolveRedirect(request.uri, location);
             ParsedUri currentUri = ParsedUri.parse(request.uri);
+            String nextUri = httpWireString(
+                    context,
+                    "resolve_redirect",
+                    currentUri.scheme,
+                    currentUri.hostHeader(),
+                    currentUri.path,
+                    location);
             ParsedUri redirectUri = ParsedUri.parse(nextUri);
-            if (redirects == Redirect.NORMAL
-                    && currentUri.scheme.equals("https")
-                    && !redirectUri.scheme.equals("https")) {
+            boolean secureDowngrade = currentUri.scheme.equals("https")
+                    && !redirectUri.scheme.equals("https");
+            if (!httpWireBool(
+                    context,
+                    "redirect_policy_allows",
+                    redirects.name(),
+                    secureDowngrade)) {
                 return response;
             }
+
             String nextMethod = request.method;
             byte[] nextBody = request.body;
-            if (response.statusCode == 303
-                    || ((response.statusCode == 301 || response.statusCode == 302)
-                    && request.method.equals("POST"))) {
+            if (httpWireBool(
+                    context,
+                    "redirect_rewrites_to_get",
+                    (long) response.statusCode,
+                    request.method)) {
                 nextMethod = "GET";
                 nextBody = new byte[0];
             }
 
             Map<String, List<String>> nextHeaders = request.headers;
-            if (!sameAuthority(currentUri, redirectUri)) {
+            if (!httpWireBool(
+                    context,
+                    "same_authority",
+                    currentUri.scheme,
+                    currentUri.host,
+                    (long) currentUri.port,
+                    redirectUri.scheme,
+                    redirectUri.host,
+                    (long) redirectUri.port)) {
                 LinkedHashMap<String, List<String>> sanitized = new LinkedHashMap<>();
                 request.headers.forEach((name, values) -> {
                     String lower = name.toLowerCase(Locale.ROOT);
@@ -1224,7 +1281,7 @@ public final class OresNet {
                     ioVoid(() -> NativeSocketBridge.setActorIoTimeout(handle, boundedIoTimeout));
                 }
 
-                byte[] wireRequest = encodeRequest(request, uri);
+                byte[] wireRequest = serializeRequest(context, request, uri);
                 writeAll(handle, wireRequest);
                 byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
                 ParsedResponse parsed = parseResponse(wireResponse, request.method);
@@ -1249,34 +1306,30 @@ public final class OresNet {
             }
         }
 
-        private static byte[] encodeRequest(HttpRequestValue request, ParsedUri uri) {
-            StringBuilder head = new StringBuilder();
-            head.append(request.method).append(' ').append(uri.requestTarget()).append(" HTTP/1.1\r\n");
-            head.append("Host: ").append(uri.hostHeader()).append("\r\n");
-            head.append("Connection: close\r\n");
-
-            boolean hasContentType = false;
+        private static byte[] serializeRequest(
+                OresContext context,
+                HttpRequestValue request,
+                ParsedUri uri) {
+            ArrayList<Object> headerNames = new ArrayList<>();
+            ArrayList<Object> headerValues = new ArrayList<>();
             for (Map.Entry<String, List<String>> entry : request.headers.entrySet()) {
-                String lower = entry.getKey().toLowerCase(Locale.ROOT);
-                if (lower.equals("host") || lower.equals("content-length") || lower.equals("connection")) continue;
-                if (lower.equals("content-type")) hasContentType = true;
                 for (String value : entry.getValue()) {
-                    head.append(entry.getKey()).append(": ").append(value).append("\r\n");
+                    headerNames.add(entry.getKey());
+                    headerValues.add(value);
                 }
             }
 
-            if (request.body.length > 0 || request.method.equals("POST")
-                    || request.method.equals("PUT") || request.method.equals("PATCH")) {
-                head.append("Content-Length: ").append(request.body.length).append("\r\n");
-                if (!hasContentType) head.append("Content-Type: application/octet-stream\r\n");
-            }
-            if (request.expectContinue) head.append("Expect: 100-continue\r\n");
-            head.append("\r\n");
-
-            byte[] header = head.toString().getBytes(StandardCharsets.ISO_8859_1);
-            byte[] result = Arrays.copyOf(header, header.length + request.body.length);
-            System.arraycopy(request.body, 0, result, header.length, request.body.length);
-            return result;
+            Object encoded = httpWire(
+                    context,
+                    "serialize_request",
+                    request.method,
+                    uri.requestTarget(),
+                    uri.hostHeader(),
+                    headerNames,
+                    headerValues,
+                    bytesToList(request.body),
+                    request.expectContinue);
+            return bytesArg(encoded, "http_wire.serialize_request");
         }
 
         private static void writeAll(NativeSocketHandle handle, byte[] bytes) {
@@ -1711,27 +1764,6 @@ public final class OresNet {
             }
         }
         return null;
-    }
-
-    private static boolean isRedirect(int status) {
-        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
-    }
-
-    private static boolean sameAuthority(ParsedUri left, ParsedUri right) {
-        return left.scheme.equals(right.scheme)
-                && left.host.equalsIgnoreCase(right.host)
-                && left.port == right.port;
-    }
-
-    private static String resolveRedirect(String base, String location) {
-        if (location.contains("://")) return location;
-        ParsedUri parsed = ParsedUri.parse(base);
-        String origin = parsed.scheme + "://" + parsed.hostHeader();
-        if (location.startsWith("/")) return origin + location;
-        String basePath = parsed.path;
-        int slash = basePath.lastIndexOf('/');
-        String prefix = slash < 0 ? "/" : basePath.substring(0, slash + 1);
-        return origin + prefix + location;
     }
 
     private static void validateHeader(String name, String value) {
