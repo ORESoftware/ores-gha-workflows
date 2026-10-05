@@ -52,6 +52,7 @@ jobs:
           grep -q 'response_may_have_body' stdlib/net/http.ores
           grep -q 'restricted_request_header' stdlib/net/http.ores
           grep -q 'canonical_request_header' stdlib/net/http.ores
+          grep -q 'sensitive_redirect_header' stdlib/net/http.ores
           grep -q 'parse_absolute' stdlib/net/uri.ores
           grep -q 'request_target' stdlib/net/uri.ores
           grep -q 'host_header' stdlib/net/uri.ores
@@ -67,6 +68,8 @@ jobs:
           ! grep -q 'static ParsedUri parse(String raw)' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'validateHeader(String name' src/main/java/dev/oreslang/net/OresNet.java
           ! grep -q 'canonicalHeaderName(String name' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'MAX_REDIRECTS' src/main/java/dev/oreslang/net/OresNet.java
+          ! grep -q 'proxy-authorization' src/main/java/dev/oreslang/net/OresNet.java
           grep -q 'parse_response' stdlib/net/http.ores
           grep -q 'decode_chunked' stdlib/net/http.ores
           grep -q 'invokeStdlib' src/main/java/dev/oreslang/net/OresNet.java
