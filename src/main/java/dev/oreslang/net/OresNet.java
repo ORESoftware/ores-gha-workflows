@@ -22,9 +22,9 @@ import java.util.Objects;
 /**
  * Oreslang native networking package.
  *
- * The public guest surface intentionally mirrors the useful Java java.net and
- * java.net.http shapes, while transport I/O is implemented by liboresnet via
- * JNI rather than java.net.Socket/ServerSocket/HttpClient.
+ * The public guest surface intentionally mirrors useful JDK networking API
+ * shapes, while all transport I/O is implemented by liboresnet through the
+ * privileged JNI boundary rather than JDK networking transports.
  */
 public final class OresNet {
     private static final String HTTP_WIRE_STDLIB = "/stdlib/net/http.ores";
@@ -757,7 +757,7 @@ public final class OresNet {
     }
 
     // ---------------------------------------------------------------------
-    // java.net.http-compatible surface, backed by the JNI TCP transport.
+    // JDK-HTTP-compatible surface, backed by the native TCP transport.
     // ---------------------------------------------------------------------
 
     private static final class HttpPackage extends NetworkValue {
@@ -1262,7 +1262,7 @@ public final class OresNet {
             if (!uri.scheme.equals("http")) {
                 if (uri.scheme.equals("https")) {
                     throw new UnsupportedOperationException(
-                            "HTTPS requires the native TLS backend; java.net.http is intentionally not used as a fallback");
+                            "HTTPS requires the native TLS backend; a JDK HTTP transport fallback is forbidden");
                 }
                 throw new IllegalArgumentException("unsupported URI scheme: " + uri.scheme);
             }
