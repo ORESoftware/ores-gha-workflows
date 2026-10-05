@@ -17,7 +17,8 @@ import java.util.List;
  * admits capabilities and marshals guest values into liboresfs calls.</p>
  */
 public final class NativeFsBuiltin implements BuiltinValue {
-    private static final int MAX_READ_SOME_BYTES = 1024 * 1024;
+    private static final int MAX_IO_BYTES_PER_CALL = 1024 * 1024;
+    private static final int MAX_READ_SOME_BYTES = MAX_IO_BYTES_PER_CALL;
 
     private final OresContext context;
 
@@ -51,12 +52,13 @@ public final class NativeFsBuiltin implements BuiltinValue {
                 int offset = integer(args, 2);
                 int length = integer(args, 3);
                 validateRange(target.size(), offset, length, name);
-                byte[] bytes = toBytes(target);
+                boundIoLength(length, name);
+                byte[] bytes = new byte[length];
                 int count = io(() -> NativeFileBridge.read(
-                        handle, bytes, offset, length));
+                        handle, bytes, 0, length));
                 if (count > 0) {
-                    for (int i = offset; i < offset + count; i++) {
-                        target.set(i, (long) (bytes[i] & 0xff));
+                    for (int i = 0; i < count; i++) {
+                        target.set(offset + i, (long) (bytes[i] & 0xff));
                     }
                 }
                 return (long) count;
@@ -88,9 +90,10 @@ public final class NativeFsBuiltin implements BuiltinValue {
                 int offset = integer(args, 2);
                 int length = integer(args, 3);
                 validateRange(source.size(), offset, length, name);
-                byte[] bytes = toBytes(source);
+                boundIoLength(length, name);
+                byte[] bytes = sliceBytes(source, offset, length);
                 return (long) io(() -> NativeFileBridge.write(
-                        handle, bytes, offset, length));
+                        handle, bytes, 0, length));
             };
             case "size" -> (BuiltinCallable) args -> {
                 require(args, 1, name);
@@ -189,10 +192,10 @@ public final class NativeFsBuiltin implements BuiltinValue {
         }
     }
 
-    private static byte[] toBytes(List<Object> values) {
-        byte[] result = new byte[values.size()];
-        for (int i = 0; i < values.size(); i++) {
-            Object item = values.get(i);
+    private static byte[] sliceBytes(List<Object> values, int offset, int length) {
+        byte[] result = new byte[length];
+        for (int i = 0; i < length; i++) {
+            Object item = values.get(offset + i);
             if (!(item instanceof Number number)
                     || number.longValue() < 0
                     || number.longValue() > 255) {
@@ -202,6 +205,14 @@ public final class NativeFsBuiltin implements BuiltinValue {
             result[i] = (byte) number.intValue();
         }
         return result;
+    }
+
+    private static void boundIoLength(int length, String operation) {
+        if (length > MAX_IO_BYTES_PER_CALL) {
+            throw new IllegalArgumentException(
+                    "native_fs." + operation + " exceeds "
+                            + MAX_IO_BYTES_PER_CALL + " bytes per primitive call");
+        }
     }
 
     private static int positive(int value, String name) {

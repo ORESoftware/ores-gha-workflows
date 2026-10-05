@@ -42,6 +42,16 @@ final class NativeFileBridgeTest {
     }
 
     @Test
+    void specialFilesAreRejectedWithoutBlocking() throws Exception {
+        Path devNull = Path.of("/dev/null");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(devNull));
+        java.io.IOException error = assertThrows(
+                java.io.IOException.class,
+                () -> NativeFileBridge.openReadHandle(devNull.toString()));
+        assertTrue(error.getMessage().contains("regular files"), error::getMessage);
+    }
+
+    @Test
     void staleHandleCannotTargetAReusedNumericFd() throws Exception {
         NativeFileHandle stale = new NativeFileHandle(17);
         stale.closeWith(fd -> { });

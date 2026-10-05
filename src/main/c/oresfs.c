@@ -78,13 +78,22 @@ static int configure_cloexec(int fd) {
 }
 
 static int open_regular(JNIEnv *env, const char *path, int flags, mode_t mode) {
+    int open_flags = flags;
+#ifdef O_CLOEXEC
+    open_flags |= O_CLOEXEC;
+#endif
+#ifdef O_NONBLOCK
+    /*
+     * Open nonblocking until fstat proves this is a regular file. This keeps
+     * a path that names a FIFO/device from pinning a carrier thread before the
+     * regular-file policy can reject it.
+     */
+    open_flags |= O_NONBLOCK;
+#endif
+
     int fd;
     do {
-#ifdef O_CLOEXEC
-        fd = open(path, flags | O_CLOEXEC, mode);
-#else
-        fd = open(path, flags, mode);
-#endif
+        fd = open(path, open_flags, mode);
     } while (fd < 0 && errno == EINTR);
 
     if (fd < 0) {
@@ -114,6 +123,18 @@ static int open_regular(JNIEnv *env, const char *path, int flags, mode_t mode) {
         throw_with_message(env, "native_fs only opens regular files");
         return -1;
     }
+
+#ifdef O_NONBLOCK
+    int status_flags = fcntl(fd, F_GETFL, 0);
+    if (status_flags < 0
+            || fcntl(fd, F_SETFL, status_flags & ~O_NONBLOCK) < 0) {
+        int saved = errno;
+        (void)close(fd);
+        errno = saved;
+        throw_errno(env, "fcntl(clear O_NONBLOCK)");
+        return -1;
+    }
+#endif
 
     return fd;
 }

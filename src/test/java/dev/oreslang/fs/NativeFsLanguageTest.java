@@ -80,6 +80,40 @@ final class NativeFsLanguageTest {
     }
 
     @Test
+    void oversizedPrimitiveReadIsRejectedBeforeNativeIo() throws Exception {
+        Path path = Files.createTempFile("oreslang-native-fs-bound-", ".bin");
+        String escapedPath = path.toString()
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
+
+        String program = """
+                pub routine main() => void {
+                  val input = native_fs.open_read("%s");
+                  native_fs.read_some(&input, 1048577);
+                  native_fs.close(input);
+                  return;
+                }
+                """.formatted(escapedPath);
+
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        program,
+                        "native-fs-bound-test.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
+
+        try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit()).build()) {
+            Exception error = assertThrows(Exception.class, () -> context.eval(source));
+            assertTrue(error.toString().contains("1048576"), error::toString);
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    @Test
     void nativeFsRequiresExplicitCapabilities() throws Exception {
         String program = """
                 pub routine main() => void {
